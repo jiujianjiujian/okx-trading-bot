@@ -2435,14 +2435,14 @@ class AutoTrader:
                     if self._factor_miner is None and DEEPSEEK_API_KEY:
                         self._factor_miner = FactorMiner()
                     if self._factor_miner:
-                        send("🔬 启动每日因子挖掘...")
+                        print("🔬 启动每日因子挖掘...")
                         try:
                             self._factor_miner.run_discovery(
                                 symbols=["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"],
                                 send=send,
                             )
                         except Exception as e:
-                            send(f"⚠️ 因子挖掘异常: {e}")
+                            print(f"因子挖掘异常: {e}")
 
                 # 周报
                 if now_dt.weekday() == 6 and now_dt.hour == 21 and now_ts - last_weekly > 3600:

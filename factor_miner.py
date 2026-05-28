@@ -150,7 +150,7 @@ class FactorMiner:
 
         for symbol in symbols:
             if send:
-                send(f"🔬 因子挖掘 [{symbol}] ...")
+                print(f"🔬 因子挖掘 [{symbol}] ...")
 
             # Step 1: 回测预设因子
             preset_results = self.bt.test_preset_factors(symbol, "1H")
@@ -264,12 +264,11 @@ class FactorMiner:
         self._save_library()
 
         elapsed = time.time() - start_time
-        if send:
-            active_count = sum(1 for f in self._library["factors"].values() if f.get("active"))
-            send(f"📊 因子挖掘完成 ({elapsed:.0f}s): "
-                 f"新发现{len(results['discovered'])}个, "
-                 f"通过{results['passed']}个, "
-                 f"因子库共{active_count}个活跃因子")
+        active_count = sum(1 for f in self._library["factors"].values() if f.get("active"))
+        print(f"📊 因子挖掘完成 ({elapsed:.0f}s): "
+              f"新发现{len(results['discovered'])}个, "
+              f"通过{results['passed']}个, "
+              f"因子库共{active_count}个活跃因子")
 
         return results
 
