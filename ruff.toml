@@ -1,0 +1,23 @@
+# Ruff configuration for OKX Trading Bot
+target-version = "py312"
+
+[lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "W",      # pycodestyle warnings
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PIE",    # flake8-pie
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "E501",   # line too long
+    "F401",   # unused import (allow for re-exports)
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

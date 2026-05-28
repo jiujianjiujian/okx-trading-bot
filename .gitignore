@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+.ruff_cache/
+.my_cache/
+trades.db
+conversations.json
+bot.log
+factor_library.json
+bandit_report.json
+paul_wei_data/
+.backtest/
+*.db
+*.log
