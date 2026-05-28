@@ -166,7 +166,7 @@ class FactorMiner:
                         "code": r.code,
                         "ic_mean": r.ic_mean,
                         "ir": r.ir,
-                        "sharpe": r.sharpe_ratio,
+                        "sharpe": r.sharpe,
                         "score": r.score,
                         "active": r.passed,
                         "symbols": [symbol],
@@ -178,7 +178,7 @@ class FactorMiner:
             if send and valid_presets:
                 best = valid_presets[0]
                 send(f"  预设因子: {len(valid_presets)}个有效, 最佳={best.name} "
-                     f"(IC={best.ic_mean:.3f}, 夏普={best.sharpe_ratio:.1f})")
+                     f"(IC={best.ic_mean:.3f}, 夏普={best.sharpe:.1f})")
 
             # Step 3: LLM 生成新因子
             llm_prompt = self._build_discovery_prompt(symbol, valid_presets)
@@ -216,7 +216,7 @@ class FactorMiner:
                     "symbol": symbol, "name": f"{symbol}:{name}",
                     "code": code, "desc": desc,
                     "ic_mean": bt_result.ic_mean, "ir": bt_result.ir,
-                    "sharpe": bt_result.sharpe_ratio, "score": bt_result.score,
+                    "sharpe": bt_result.sharpe, "score": bt_result.score,
                     "passed": bt_result.passed,
                 })
 
@@ -236,7 +236,7 @@ class FactorMiner:
                         "desc": desc,
                         "ic_mean": bt_result.ic_mean,
                         "ir": bt_result.ir,
-                        "sharpe": bt_result.sharpe_ratio,
+                        "sharpe": bt_result.sharpe,
                         "score": bt_result.score,
                         "active": bt_result.passed,
                         "symbols": [symbol],
@@ -246,7 +246,7 @@ class FactorMiner:
                 if send:
                     tag = "✅" if bt_result.passed else "❌"
                     send(f"  {tag} {name}: IC={bt_result.ic_mean:.3f} "
-                         f"IR={bt_result.ir:.2f} 夏普={bt_result.sharpe_ratio:.1f} "
+                         f"IR={bt_result.ir:.2f} 夏普={bt_result.sharpe:.1f} "
                          f"评分={bt_result.score:.0f}")
 
         # 清理低分因子
