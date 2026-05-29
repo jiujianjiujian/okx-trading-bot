@@ -60,6 +60,32 @@ from conversation_manager import ConversationManager
 from claude_chat import ClaudeChat
 
 
+def acquire_instance_lock(path: str = ".okx_bot.lock"):
+    """Prevent duplicate bot processes from running the trading loop."""
+    lock_file = open(path, "a+", encoding="utf-8")  # noqa: SIM115 - lock must stay open
+    try:
+        lock_file.seek(0)
+        if not lock_file.read(1):
+            lock_file.write(" ")
+            lock_file.flush()
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        lock_file.close()
+        raise RuntimeError("已有 OKX Trading Bot 实例在运行，拒绝重复启动") from exc
+
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
 # ============================================================
 # 初始化模块
 # ============================================================
@@ -512,8 +538,9 @@ async def process_trade_signal(signal: TradeSignal, signal_id: int):
 # ============================================================
 
 if __name__ == "__main__":
+    instance_lock = acquire_instance_lock()
     uvicorn.run(
-        "main:app",
+        app,
         host="0.0.0.0",
         port=WEBHOOK_PORT,
         log_level="info",
