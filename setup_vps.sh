@@ -14,12 +14,12 @@ echo "=== 3. 安装 Python 包 ==="
 venv/bin/pip install -r requirements.txt -q
 
 echo "=== 4. 启动服务 ==="
-nohup venv/bin/python main.py > /root/bot.log 2>&1 &
+nohup venv/bin/python main.py > /root/okx-bot/bot.log 2>&1 &
 echo "PID: $!"
 
 sleep 3
 echo "=== 5. 检查状态 ==="
-cat /root/bot.log
+cat /root/okx-bot/bot.log
 
 echo ""
 echo "=== 安装完成 ==="

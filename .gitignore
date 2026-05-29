@@ -6,6 +6,7 @@ __pycache__/
 trades.db
 conversations.json
 bot.log
+.telegram_bot.lock
 factor_library.json
 bandit_report.json
 paul_wei_data/

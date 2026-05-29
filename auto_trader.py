@@ -51,6 +51,43 @@ SESSIONS = {
 }
 
 class AutoTrader:
+    HARD_RULES: ClassVar[dict] = {
+        # AI 可以选方向，但不能放宽这些硬边界。
+        "scalp": {
+            "leverage": 5,
+            "risk_pct": 0.25,
+            "min_confidence": 78,
+            "min_rr": 2.6,
+            "tp_sl_ratio": 3.0,
+            "max_positions": 1,
+            "min_tf_score": 0.62,
+            "max_stop_pct": 1.8,
+            "min_stop_pct": 0.15,
+        },
+        "swing": {
+            "leverage": 3,
+            "risk_pct": 0.60,
+            "min_confidence": 75,
+            "min_rr": 3.0,
+            "tp_sl_ratio": 3.5,
+            "max_positions": 1,
+            "min_tf_score": 0.64,
+            "max_stop_pct": 4.0,
+            "min_stop_pct": 0.35,
+        },
+        "safety": {
+            "max_leverage": 8,
+            "max_risk_pct": 0.75,
+            "max_positions_total": 2,
+            "max_daily_loss_pct": 1.5,
+            "max_intraday_drawdown_pct": 3.0,
+            "max_consecutive_losses": 2,
+            "max_daily_entries": 6,
+            "min_liquidation_buffer": 1.0,
+            "max_spread_pct": 0.15,
+            "min_depth_1pct": 30000,
+        },
+    }
 
     def __init__(self):
         self.api_key = DEEPSEEK_API_KEY
@@ -66,17 +103,19 @@ class AutoTrader:
         self._factor_miner = None  # 延迟初始化，避免 API key 检查
 
         # ---- 参数 ----
-        self.scalp = {"enabled":True,"leverage":15,"risk_pct":0.5,"min_confidence":70,
-                      "min_rr":2.0,"tp_sl_ratio":2.5,"trailing_pct":0.3,
-                      "max_positions":3,"interval":300,
+        self.scalp = {"enabled":True,"leverage":5,"risk_pct":0.25,"min_confidence":78,
+                      "min_rr":2.6,"tp_sl_ratio":3.0,"trailing_pct":0.3,
+                      "max_positions":1,"interval":300,
                       "timeframes":["1m","5m","15m"],"atr_mult_sl":1.5,"atr_mult_tp":4.0}
-        self.swing = {"enabled":True,"leverage":8,"risk_pct":1.5,"min_confidence":65,
-                      "min_rr":2.5,"tp_sl_ratio":3.0,"trailing_pct":1.0,
-                      "max_positions":2,"interval":3600,
+        self.swing = {"enabled":True,"leverage":3,"risk_pct":0.60,"min_confidence":75,
+                      "min_rr":3.0,"tp_sl_ratio":3.5,"trailing_pct":1.0,
+                      "max_positions":1,"interval":3600,
                       "timeframes":["1H","4H","1D"],"atr_mult_sl":2.0,"atr_mult_tp":6.0}
 
-        self.safety = {"max_leverage":25,"max_risk_pct":2.0,"max_positions_total":4,
-                       "max_daily_loss":MAX_DAILY_LOSS,"min_liquidation_buffer":0.5}
+        self.safety = {
+            **self.HARD_RULES["safety"],
+            "max_daily_loss": min(MAX_DAILY_LOSS, self.HARD_RULES["safety"]["max_daily_loss_pct"]),
+        }
 
         # ---- 状态 ----
         self.consecutive_losses = 0
@@ -990,28 +1029,33 @@ class AutoTrader:
         else: return "asia"
 
     def _session_adjust(self, params: dict) -> dict:
-        """时段自适应调参 — 用历史胜率动态调整"""
+        """时段自适应只允许收紧，不能放宽硬风控。"""
         p = dict(params)
         session = self._current_session()
+        mode = "scalp" if params is self.scalp else "swing"
+        floor = self.HARD_RULES[mode]
+
+        p["leverage"] = min(p["leverage"], floor["leverage"], self.safety["max_leverage"])
+        p["risk_pct"] = min(p["risk_pct"], floor["risk_pct"], self.safety["max_risk_pct"])
+        p["min_confidence"] = max(p["min_confidence"], floor["min_confidence"])
+        p["min_rr"] = max(p["min_rr"], floor["min_rr"])
+        p["tp_sl_ratio"] = max(p["tp_sl_ratio"], floor["tp_sl_ratio"])
+        p["max_positions"] = min(p["max_positions"], floor["max_positions"])
+
         # 从历史数据学习时段偏好
         try:
             stats = self.logger.get_session_stats(days=30)
             sess_stat = stats.get(session, {})
             if sess_stat.get("total", 0) >= 5:  # ≥5笔才有统计意义
                 wr = sess_stat["win_rate"]
-                if wr > 0.60:
-                    p["min_confidence"] -= 5  # 高胜率时段放宽
-                    print(f"[时段] {session} 胜率{wr:.0%} → 放宽置信度")
-                elif wr < 0.35:
+                if wr < 0.35:
                     p["min_confidence"] += 15  # 低胜率时段大幅收紧
                     print(f"[时段] {session} 胜率{wr:.0%} → 收紧置信度")
                 return p
         except Exception:
             pass  # fallback 到硬编码
         # 数据不足时用硬编码
-        if session == "overlap":
-            p["min_confidence"] -= 3
-        elif session == "asia":
+        if session == "asia":
             p["min_confidence"] += 5
             p["min_rr"] += 0.3
         return p
@@ -1101,15 +1145,19 @@ class AutoTrader:
         now = time.time()
         for oid, info in list(self.pending_orders.items()):
             if now - info["time"] > info["timeout"]:
-                # 检查是否已成交
                 positions = self.okx.get_positions()
                 filled = any(p["instId"] == info["symbol"] for p in positions)
-                if not filled:
-                    self.okx.close_position(info["symbol"])  # 取消挂单
-                    if not info["notified"]:
-                        send(f"⏰ *限价单超时已取消*\n"
+                ok, msg = self.okx.cancel_order(info["symbol"], oid)
+                if not info["notified"]:
+                    fill_text = "可能已部分/全部成交，已撤剩余委托" if filled else "未成交，已撤销"
+                    if ok:
+                        send(f"⏰ *限价单超时已处理*\n"
                              f"📌 {info['symbol']} | 挂单${info['entry']:,.1f}\n"
-                             f"⏱ 超时{info['timeout']}秒未成交，已撤销")
+                             f"⏱ 超时{info['timeout']}秒，{fill_text}")
+                    else:
+                        send(f"⚠️ *限价单超时但撤单失败*\n"
+                             f"📌 {info['symbol']} | 订单{oid}\n"
+                             f"原因: {msg}")
                 expired.append(oid)
         for oid in expired:
             self.pending_orders.pop(oid, None)
@@ -1170,6 +1218,7 @@ class AutoTrader:
         """快速AI + 深度AI 方向一致才通过
         管线: 市场状态→交易可行性→AI方向判断→风控闸门"""
         adjusted = self._session_adjust(params)
+        hard = self.HARD_RULES[mode]
 
         # 引擎1: 4H宏观组合信号 (仅短线模式)
         engine1 = {"signal": "none", "confidence_boost": 0, "reason": ""}
@@ -1296,7 +1345,7 @@ class AutoTrader:
             "*强制规则:*\n"
             "regime=unclear → no_trade\n"
             "risk_level=extreme → no_trade\n"
-            "confidence<70 → no_trade\n"
+            f"confidence<{adjusted['min_confidence']} → no_trade\n"
             "data_quality=poor → no_trade\n"
             "无stop_loss → no_trade\n"
             "无invalid_condition → no_trade\n\n"
@@ -1394,7 +1443,11 @@ class AutoTrader:
         try:
             entry = float(decision["entry"]); sl = float(decision["stop_loss"])
             tp = float(decision["take_profit"])
-            lev = min(int(decision.get("leverage",params["leverage"])), self.safety["max_leverage"])
+            lev = min(
+                int(decision.get("leverage", params["leverage"])),
+                adjusted["leverage"],
+                self.safety["max_leverage"],
+            )
             direction = action.lower()
         except Exception: return None
 
@@ -1404,9 +1457,24 @@ class AutoTrader:
         if rr < adjusted["min_rr"]:
             return {"action":"WAIT","reason":f"盈亏比{rr:.1f}<{adjusted['min_rr']}","market":main,"mode":mode}
 
+        sl_pct = abs(entry - sl) / entry * 100 if entry > 0 else 0
+        if sl_pct > hard["max_stop_pct"]:
+            return {"action":"WAIT","reason":f"止损距离{sl_pct:.2f}%>{hard['max_stop_pct']}%，亏损边界过大","market":main,"mode":mode}
+        if sl_pct < hard["min_stop_pct"]:
+            return {"action":"WAIT","reason":f"止损距离{sl_pct:.2f}%<{hard['min_stop_pct']}%，容易被噪音扫损","market":main,"mode":mode}
+
+        direction_tf_score = tf_score_long if direction == "long" else tf_score_short
+        opposite_tf_score = tf_score_short if direction == "long" else tf_score_long
+        if direction_tf_score < hard["min_tf_score"]:
+            return {"action":"WAIT","reason":f"多周期评分{direction_tf_score:.2f}<{hard['min_tf_score']}","market":main,"mode":mode}
+        if direction_tf_score - opposite_tf_score < 0.08:
+            return {"action":"WAIT","reason":"多空评分差不足，优势不明显","market":main,"mode":mode}
+
         safe, liq, buf = self.liq_safe(entry, sl, lev, direction)
         if not safe:
             return {"action":"WAIT","reason":f"止损距爆仓仅{buf:.1f}%","market":main,"mode":mode}
+        if buf < self.safety["min_liquidation_buffer"]:
+            return {"action":"WAIT","reason":f"爆仓缓冲{buf:.1f}%<{self.safety['min_liquidation_buffer']}%","market":main,"mode":mode}
 
         # 关联性过滤
         corr_ok, corr_reason = self._btc_correlation_check(symbol, direction)
@@ -1432,6 +1500,9 @@ class AutoTrader:
             conf -= 10  # 严重偏离 Paul Wei 模式，降低信心
         elif pw_score >= 70:
             conf = min(100, conf + 5)  # 高度契合，加信心
+
+        if conf < adjusted["min_confidence"]:
+            return {"action":"WAIT","reason":f"最终置信{conf}<{adjusted['min_confidence']}","market":main,"mode":mode}
 
         return {"action":action,"direction":direction,"mode":mode,"entry":entry,
                 "stop_loss":sl,"take_profit":tp,"leverage":lev,"confidence":conf,
@@ -1463,19 +1534,24 @@ class AutoTrader:
         if ex_health.get("error"):
             return False, f"交易所不可用: {ex_health['summary']}"
 
-        # ---- 1. 日亏损 > 2%: 停止开仓 ----
+        today_trades = self.logger.get_today_trades()
+        if len(today_trades) >= self.safety["max_daily_entries"]:
+            return False, f"今日开仓{len(today_trades)}笔已达上限{self.safety['max_daily_entries']}"
+
+        # ---- 1. 日亏损触发停手 ----
         today_pnl = self.logger.get_today_pnl()
-        if equity > 0 and today_pnl < 0 and abs(today_pnl) / equity > 0.02:
-            return False, f"日亏损{abs(today_pnl)/equity*100:.1f}%>2%，今日停止开仓"
+        max_daily_loss_pct = self.safety["max_daily_loss_pct"]
+        if equity > 0 and today_pnl < 0 and abs(today_pnl) / equity * 100 > max_daily_loss_pct:
+            return False, f"日亏损{abs(today_pnl)/equity*100:.1f}%>{max_daily_loss_pct}%，今日停止开仓"
 
         # ---- 2. 总回撤 > 5%: 减仓50% ----
         # 用当日累积盈亏近似
         drawdown_pct = abs(today_pnl) / equity * 100 if today_pnl < 0 and equity > 0 else 0
-        if drawdown_pct > 8:
-            return False, f"总回撤{drawdown_pct:.1f}%>8%，停止实盘"
+        if drawdown_pct > self.safety["max_intraday_drawdown_pct"]:
+            return False, f"日内回撤{drawdown_pct:.1f}%>{self.safety['max_intraday_drawdown_pct']}%，停止交易"
 
         # ---- 3. 连续亏损 > 3: 冷却期 ----
-        if self.consecutive_losses >= 3:
+        if self.consecutive_losses >= self.safety["max_consecutive_losses"]:
             return False, f"连续亏损{self.consecutive_losses}笔，冷却期"
 
         # ---- 4. OI+费率: 禁止拥挤方向追单 / 大波动降仓 ----
@@ -1541,9 +1617,9 @@ class AutoTrader:
 
         # ---- 8. Kill Switch: 盘口/流动性突变 ----
         ms = self._microstructure(d["symbol"])
-        if ms["spread"] > 0.3:
+        if ms["spread"] > self.safety["max_spread_pct"]:
             return False, f"价差异常扩大({ms['spread']:.2f}%)，可能重大事件/维护"
-        if ms["depth_1pct"] < 10000:
+        if ms["depth_1pct"] < self.safety["min_depth_1pct"]:
             return False, f"深度极低({ms['depth_1pct']:.0f})，禁止交易"
         if ms["liquidity_gap"]:
             return False, "流动性断层，止损可能被击穿"
@@ -1954,10 +2030,9 @@ class AutoTrader:
         # === 4. 决策判定 ===
         lines.append("\n*4. 强制规则检查*")
         checks = []
-        checks.append(f"{'✅' if today_pnl > -equity*0.02 else '❌'}日亏<2%")
-        checks.append(f"{'✅' if max_dd < 5 else '❌'}回撤<5%")
-        checks.append(f"{'✅' if max_dd < 8 else '❌'}回撤<8%")
-        checks.append(f"{'✅' if self.consecutive_losses < 3 else '❌'}连亏<3")
+        checks.append(f"{'✅' if today_pnl > -equity*self.safety['max_daily_loss_pct']/100 else '❌'}日亏<{self.safety['max_daily_loss_pct']}%")
+        checks.append(f"{'✅' if max_dd < self.safety['max_intraday_drawdown_pct'] else '❌'}回撤<{self.safety['max_intraday_drawdown_pct']}%")
+        checks.append(f"{'✅' if self.consecutive_losses < self.safety['max_consecutive_losses'] else '❌'}连亏<{self.safety['max_consecutive_losses']}")
         checks.append(f"{'✅' if sl > 0 else '❌'}止损已设")
         checks.append(f"{'✅' if d['confidence'] >= 70 else '❌'}信心≥70")
         checks.append(f"{'✅' if regime.get('risk_level') != 'extreme' else '❌'}非extreme")
@@ -1986,7 +2061,10 @@ class AutoTrader:
         if len(positions) >= self.safety["max_positions_total"]:
             send("⛔ 仓位已满"); return False
 
-        self.okx.set_leverage(d["symbol"], d["leverage"])
+        ok, lev_msg = self.okx.set_leverage(d["symbol"], d["leverage"])
+        if not ok:
+            send(f"⛔ 设置杠杆失败: {lev_msg}")
+            return False
 
         # 获取盘口微观数据（后续多处使用）
         ms = self._microstructure(d["symbol"])
@@ -1999,11 +2077,19 @@ class AutoTrader:
         q = 1 - p
         kelly_f = (p * b - q) / b
         kelly_f = max(0.005, min(kelly_f, 0.05))  # 夹0.5%-5% (quarter-Kelly安全边际)
-        risk_pct = kelly_f * 0.5                   # Half-Kelly 再折半
+        hard_risk_pct = min(d.get("risk_pct", self.safety["max_risk_pct"]), self.safety["max_risk_pct"]) / 100
+        risk_pct = min(kelly_f * 0.5, hard_risk_pct)
         risk_amount = equity * risk_pct
         price_risk = abs(d["entry"]-d["stop_loss"])
-        ct_val = 0.001 if "BTC" in d["symbol"] else 0.01
-        qty = max(1, int(risk_amount/(price_risk*ct_val)))
+        instrument = self.okx.get_instrument_info(d["symbol"])
+        ct_val = float(instrument.get("ctVal") or 0.001)
+        min_sz = float(instrument.get("minSz") or 1)
+        lot_sz = float(instrument.get("lotSz") or 1)
+        raw_qty = risk_amount / (price_risk * ct_val) if price_risk > 0 and ct_val > 0 else 0
+        qty = self.risk.normalize_contracts(raw_qty, min_sz, lot_sz)
+        if qty <= 0:
+            send("⛔ 仓位计算异常")
+            return False
 
         # ================================================================
         # 波动率过滤: ATR%极端时跳过
@@ -2014,42 +2100,43 @@ class AutoTrader:
             if atr_pct > 5.0:
                 send(f"🌋 波动率极高(ATR{atr_pct:.1f}%)，暂停交易"); return False
             if atr_pct > 3.0:
-                qty = max(1, int(qty * 0.3))
+                qty = self.risk.normalize_contracts(qty * 0.3, min_sz, lot_sz)
                 send(f"⚠️ 高波动(ATR{atr_pct:.1f}%)，仓位压缩至30%")
         # ATR比率自适应
         if atr_ratio > 2.0:
-            qty = max(1, int(qty * 0.5))
+            qty = self.risk.normalize_contracts(qty * 0.5, min_sz, lot_sz)
             send(f"⚠️ ATR波动率极高({atr_ratio:.1f}x)，仓位减半")
         elif atr_ratio > 1.5:
-            qty = max(1, int(qty * 0.75))
+            qty = self.risk.normalize_contracts(qty * 0.75, min_sz, lot_sz)
         elif atr_ratio < 0.6:
-            qty = min(qty, int(qty * 1.2))
+            qty = self.risk.normalize_contracts(qty * 1.2, min_sz, lot_sz)
         # 市场状态仓位系数
         regime = d.get("regime", {})
         if regime:
-            qty = max(1, int(qty * regime.get("position_size_multiplier", 1.0)))
+            qty = self.risk.normalize_contracts(qty * regime.get("position_size_multiplier", 1.0), min_sz, lot_sz)
 
         # 总回撤 > 5%: 减仓50%
         today_pnl = self.logger.get_today_pnl()
         if equity > 0 and today_pnl < 0 and abs(today_pnl) / equity > 0.05:
-            qty = max(1, qty // 2)
+            qty = self.risk.normalize_contracts(qty * 0.5, min_sz, lot_sz)
             send("⚠️ 总回撤>5%，仓位减半")
         # 周末降仓
         if datetime.now().weekday() >= 5:
-            qty = max(1, qty // 2)
+            qty = self.risk.normalize_contracts(qty * 0.5, min_sz, lot_sz)
         # 同向仓位叠加→减仓 (相关性风险)
         corr = self._correlation_exposure(positions)
         if corr.get("corr_warning", "").startswith("⚠") and not d.get("add_position"):
-            qty = max(1, int(qty * 0.5))
+            qty = self.risk.normalize_contracts(qty * 0.5, min_sz, lot_sz)
             send(f"⚠️ 同向仓位叠加,仓位减半: {corr['corr_warning']}")
         # 策略健康减仓
         if self._last_health and self._last_health.get("status") == "reduce":
-            qty = max(1, qty // 2)
+            qty = self.risk.normalize_contracts(qty * 0.5, min_sz, lot_sz)
             send("⚠️ 策略表现不佳，仓位减半")
         # 连亏缩仓
         if self.consecutive_losses >= 3:
-            qty = max(1, qty // 2)
+            qty = self.risk.normalize_contracts(qty * 0.5, min_sz, lot_sz)
 
+        qty = self.risk.normalize_contracts(qty, min_sz, lot_sz)
         d["quantity"] = qty
 
         # === 执行质量检查 ===
@@ -2259,9 +2346,7 @@ class AutoTrader:
         total = len(pnls)
         wr = wins/total*100
 
-        sys = ("你是量化交易参数优化专家。基于交易表现给出JSON:"
-               '{"scalp_leverage":int,"scalp_risk":float,"scalp_conf":int,'
-               '"swing_leverage":int,"swing_risk":float,"swing_conf":int,"advice":"str"}')
+        sys = '你是量化交易复盘助手。只给策略观察和风控建议，输出JSON: {"advice":"str"}'
 
         # Paul Wei 参考指标
         pw_summary = self.paul_wei.get_summary()
@@ -2269,7 +2354,8 @@ class AutoTrader:
         prompt = (f"今日{total}笔|胜率{wr:.0f}%|盈亏{sum(pnls):+.2f}U|"
                   f"超短线:杆{self.scalp['leverage']}x险{self.scalp['risk_pct']}%信{self.scalp['min_confidence']}|"
                   f"短线:杆{self.swing['leverage']}x险{self.swing['risk_pct']}%信{self.swing['min_confidence']}|"
-                  f"边界:杆≤{self.safety['max_leverage']}x险≤{self.safety['max_risk_pct']}%|"
+                  f"硬规则不可修改:杆≤{self.safety['max_leverage']}x险≤{self.safety['max_risk_pct']}%"
+                  f"|日亏≤{self.safety['max_daily_loss_pct']}%|连亏<{self.safety['max_consecutive_losses']}|"
                   f"PaulWei参考: {pw_summary}")
 
         resp = self._call_ds(sys, prompt, 800)
@@ -2277,15 +2363,7 @@ class AutoTrader:
         try:
             s = max(resp.find("{"),0); e = resp.rfind("}")+1
             opt = json.loads(resp[s:e])
-            for mode, keys in [("scalp",self.scalp), ("swing",self.swing)]:
-                for k, v in [("leverage",int(opt.get(f"{mode}_leverage",keys["leverage"]))),
-                             ("risk_pct",float(opt.get(f"{mode}_risk",keys["risk_pct"]))),
-                             ("min_confidence",int(opt.get(f"{mode}_conf",keys["min_confidence"])))]:
-                    _prev = keys[k]
-                    keys[k] = max(1,min(self.safety["max_leverage"],v)) if k=="leverage" else \
-                              max(0.1,min(self.safety["max_risk_pct"],v)) if k=="risk_pct" else \
-                              max(55,min(85,v))
-            send(f"🔄 *每日优化完成*\n💡 {opt.get('advice','')}")
+            send(f"🔄 *每日复盘完成*（硬风控未自动改动）\n💡 {opt.get('advice','')}")
         except Exception: pass
 
     def weekly_report(self, send):
@@ -2762,6 +2840,10 @@ class AutoTrader:
         return "\n".join(lines)
 
     def start(self, send):
+        if self._running:
+            send("🤖 AI 自主交易引擎已在运行")
+            return
+        self._running = True
         threading.Thread(target=self.run_loop, args=(send,), daemon=True).start()
 
     def stop(self):

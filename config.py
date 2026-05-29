@@ -22,6 +22,7 @@ OKX_BASE_URL = "https://www.okx.com"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
+TELEGRAM_ENABLED = os.getenv("TELEGRAM_ENABLED", "true").lower() == "true"
 PROXY_URL = os.getenv("PROXY_URL", "")  # 通用代理，OKX 等使用
 
 # ============================================
@@ -39,6 +40,7 @@ AI_AUTO_START = os.getenv("AI_AUTO_START", "false").lower() == "true"  # 启动�
 # ============================================
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8000"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", WEBHOOK_SECRET)
 
 # ============================================
 # ============================================

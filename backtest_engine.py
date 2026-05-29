@@ -8,11 +8,56 @@
   - 最大回撤/夏普比率
 """
 
+import ast
 import math
 from dataclasses import dataclass, field
 from typing import ClassVar
 
 from strategy_analyzer import StrategyAnalyzer
+
+
+class FactorSeries(list):
+    """轻量向量序列，让因子表达式支持 close - sma(close, 20) 这类写法。"""
+
+    def _binary(self, other, op):
+        if isinstance(other, (list, tuple)):
+            if len(other) != len(self):
+                raise ValueError("Factor series length mismatch")
+            return FactorSeries(op(float(a), float(b)) for a, b in zip(self, other, strict=True))
+        return FactorSeries(op(float(a), float(other)) for a in self)
+
+    def __add__(self, other):
+        return self._binary(other, lambda a, b: a + b)
+
+    def __radd__(self, other):
+        return self.__add__(other)
+
+    def __sub__(self, other):
+        return self._binary(other, lambda a, b: a - b)
+
+    def __rsub__(self, other):
+        return self._binary(other, lambda a, b: b - a)
+
+    def __mul__(self, other):
+        return self._binary(other, lambda a, b: a * b)
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __truediv__(self, other):
+        return self._binary(other, lambda a, b: a / b if abs(b) > 1e-12 else 0.0)
+
+    def __rtruediv__(self, other):
+        return self._binary(other, lambda a, b: b / a if abs(a) > 1e-12 else 0.0)
+
+    def __pow__(self, other):
+        return self._binary(other, lambda a, b: a ** b)
+
+    def __neg__(self):
+        return FactorSeries(-float(a) for a in self)
+
+    def __abs__(self):
+        return FactorSeries(abs(float(a)) for a in self)
 
 
 @dataclass
@@ -147,19 +192,51 @@ class BacktestEngine:
             passed=False, score=0,
         )
 
+    @staticmethod
+    def _factor_code_is_safe(code: str, allowed_names: set[str]) -> bool:
+        """只允许纯表达式，禁止属性访问、导入、lambda 和推导式。"""
+        try:
+            tree = ast.parse(code, mode="eval")
+        except SyntaxError:
+            return False
+
+        allowed_nodes = (
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare,
+            ast.IfExp, ast.Call, ast.Name, ast.Load, ast.Constant,
+            ast.List, ast.Tuple, ast.Subscript, ast.Slice,
+            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+            ast.USub, ast.UAdd, ast.And, ast.Or,
+            ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+        )
+
+        for node in ast.walk(tree):
+            if not isinstance(node, allowed_nodes):
+                return False
+            if isinstance(node, ast.Name) and node.id not in allowed_names:
+                return False
+            if isinstance(node, ast.Call) and (
+                not isinstance(node.func, ast.Name) or node.func.id not in allowed_names
+            ):
+                return False
+        return True
+
     def _eval_factor(self, code: str, closes, opens, highs, lows, volumes, returns):
-        """安全执行因子代码，注入辅助函数"""
-        ns = {"close": closes, "open_": opens, "high": highs, "low": lows,
-              "volume": volumes, "returns": returns,
+        """安全执行因子表达式，注入向量和辅助函数。"""
+        ns = {"close": FactorSeries(closes), "open_": FactorSeries(opens),
+              "high": FactorSeries(highs), "low": FactorSeries(lows),
+              "volume": FactorSeries(volumes), "returns": FactorSeries(returns),
               "sqrt": math.sqrt, "log": math.log, "abs": abs,
               "max": max, "min": min, "sum": sum,
-              "prev_close": [closes[0], *closes[:-1]],
+              "prev_close": FactorSeries([closes[0], *closes[:-1]]),
               "sma": self._make_sma(), "ema": self._make_ema(),
               "rank": self._make_rank(), "ts_sum": self._make_ts_sum(),
               "ts_corr": self._make_ts_corr(), "roll": self._make_roll()}
 
         try:
-            result = eval(code, {"__builtins__": {}}, ns)
+            if not self._factor_code_is_safe(code, set(ns.keys())):
+                return None
+            # 因子表达式已由 _factor_code_is_safe 限制为纯表达式。
+            result = eval(code, {"__builtins__": {}}, ns)  # nosec B307
             if isinstance(result, (int, float)):
                 result = [float(result)] * len(closes)
             if not isinstance(result, list):
@@ -281,7 +358,7 @@ class BacktestEngine:
     @staticmethod
     def _make_sma():
         def sma(arr, period):
-            r = [0.0] * len(arr)
+            r = FactorSeries([0.0] * len(arr))
             for i in range(period - 1, len(arr)):
                 r[i] = sum(arr[i - period + 1:i + 1]) / period
             for i in range(period - 1): r[i] = r[period - 1]
@@ -291,7 +368,7 @@ class BacktestEngine:
     @staticmethod
     def _make_ema():
         def ema(arr, period):
-            r = [0.0] * len(arr)
+            r = FactorSeries([0.0] * len(arr))
             r[period - 1] = sum(arr[:period]) / period
             mult = 2.0 / (period + 1.0)
             for i in range(period, len(arr)):
@@ -303,7 +380,7 @@ class BacktestEngine:
     @staticmethod
     def _make_roll():
         def roll(arr, period):
-            r = [0.0] * len(arr)
+            r = FactorSeries([0.0] * len(arr))
             for i in range(period, len(arr)):
                 r[i] = arr[i - period]
             return r
@@ -314,7 +391,7 @@ class BacktestEngine:
         def rank(arr):
             n = len(arr)
             idxs = sorted(range(n), key=lambda x: arr[x])
-            ranks = [0] * n
+            ranks = FactorSeries([0] * n)
             for r, idx in enumerate(idxs):
                 ranks[idx] = (r + 1) / n
             return ranks
@@ -323,7 +400,7 @@ class BacktestEngine:
     @staticmethod
     def _make_ts_sum():
         def ts_sum(arr, period):
-            r = [0.0] * len(arr)
+            r = FactorSeries([0.0] * len(arr))
             for i in range(len(arr)):
                 start = max(0, i - period + 1)
                 r[i] = sum(arr[start:i + 1])
@@ -333,7 +410,7 @@ class BacktestEngine:
     @staticmethod
     def _make_ts_corr():
         def ts_corr(a, b, period):
-            r = [0.0] * len(a)
+            r = FactorSeries([0.0] * len(a))
             for i in range(period - 1, len(a)):
                 ax = a[i - period + 1:i + 1]
                 bx = b[i - period + 1:i + 1]

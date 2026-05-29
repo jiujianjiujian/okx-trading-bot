@@ -10,7 +10,11 @@ VPS_PATH="/root/okx-bot"
 echo "=== 1. 推送更新文件 ==="
 scp auto_trader.py ${VPS_USER}@${VPS_HOST}:${VPS_PATH}/
 scp telegram_bot.py ${VPS_USER}@${VPS_HOST}:${VPS_PATH}/
-scp .env ${VPS_USER}@${VPS_HOST}:${VPS_PATH}/
+if [ "${DEPLOY_ENV:-0}" = "1" ]; then
+  scp .env ${VPS_USER}@${VPS_HOST}:${VPS_PATH}/
+else
+  echo "跳过 .env 覆盖；如需同步配置请使用 DEPLOY_ENV=1 ./deploy_vps.sh"
+fi
 
 echo "=== 2. 重启机器人 ==="
 ssh ${VPS_USER}@${VPS_HOST} << 'REMOTE'

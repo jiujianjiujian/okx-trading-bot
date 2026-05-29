@@ -161,7 +161,7 @@ class OKXClient:
         self,
         symbol: str,
         direction: str,
-        quantity: int,
+        quantity: float,
         stop_loss: float = 0,
         take_profit: float = 0,
         ord_type: str = "limit",
@@ -192,16 +192,21 @@ class OKXClient:
             "sz": str(quantity),
         }
 
-        if ord_type == "limit" and limit_price > 0:
+        if ord_type == "limit":
+            if limit_price <= 0:
+                return False, "限价单缺少 limit_price", ""
             order_data["px"] = str(limit_price)
 
-        # 附加止损止盈（市价平仓）
-        if stop_loss > 0:
-            order_data["slTriggerPx"] = str(stop_loss)
-            order_data["slOrdPx"] = "-1"       # 市价止损
-        if take_profit > 0:
-            order_data["tpTriggerPx"] = str(take_profit)
-            order_data["tpOrdPx"] = "-1"       # 市价止盈
+        # 附加止损止盈（触发后市价平仓）
+        if stop_loss > 0 or take_profit > 0:
+            attached = {}
+            if stop_loss > 0:
+                attached["slTriggerPx"] = str(stop_loss)
+                attached["slOrdPx"] = "-1"
+            if take_profit > 0:
+                attached["tpTriggerPx"] = str(take_profit)
+                attached["tpOrdPx"] = "-1"
+            order_data["attachAlgoOrds"] = [attached]
 
         result = self._post("/api/v5/trade/order", order_data)
 
@@ -210,6 +215,16 @@ class OKXClient:
 
         order_id = result["data"][0]["ordId"]
         return True, "下单成功", order_id
+
+    def cancel_order(self, symbol: str, order_id: str) -> tuple[bool, str]:
+        """撤销未成交普通委托。"""
+        result = self._post("/api/v5/trade/cancel-order", {
+            "instId": symbol,
+            "ordId": order_id,
+        })
+        if not self._ok(result):
+            return False, self._error_msg(result)
+        return True, "撤单成功"
 
     def close_position(self, symbol: str) -> tuple[bool, str]:
         """市价全平指定仓位"""

@@ -9,6 +9,8 @@ OKX 合约交易机器人 - 主程序入口
 """
 
 import contextlib
+import asyncio
+import hmac
 import os
 import sys
 import threading
@@ -17,7 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 
 # Windows 终端 UTF-8 编码兼容
@@ -43,6 +45,7 @@ from config import (
     DEEPSEEK_API_KEY,
     DEEPSEEK_BASE_URL,
     AI_AUTO_START,
+    ADMIN_API_TOKEN,
 )
 from signal_parser import parse_tv_webhook, TradeSignal
 from risk_manager import RiskManager
@@ -120,7 +123,7 @@ async def lifespan(app: FastAPI):
             with contextlib.suppress(Exception):
                 qq_bot.send(msg)
             print(f"[AI] {msg}")
-        time.sleep(2)
+        await asyncio.sleep(2)
         auto_trader.start(ai_notify)
         print("[启动] AI 自主交易引擎已自动启动")
 
@@ -141,7 +144,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=position_logger, daemon=True).start()
 
     # 等待 Telegram 初始化
-    time.sleep(3)
+    await asyncio.sleep(3)
     print("[启动完成] 请在 Telegram 给 @okx_trading_assistant_bot 发 /start 激活通知")
 
     yield
@@ -154,6 +157,26 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="OKX Trading Bot", lifespan=lifespan)
+
+
+async def require_admin(request: Request):
+    """保护账户查询、重启和仪表盘等后台接口。"""
+    expected = ADMIN_API_TOKEN or WEBHOOK_SECRET
+    if not expected:
+        raise HTTPException(403, "后台访问密钥未配置")
+
+    token = request.headers.get("X-Admin-Token", "")
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+    if not token:
+        token = request.query_params.get("token", "")
+
+    if not hmac.compare_digest(token, expected):
+        raise HTTPException(403, "后台访问密钥错误")
+
+
+ADMIN_DEP = Depends(require_admin)
 
 
 # ============================================================
@@ -223,7 +246,7 @@ async def webhook(request: Request):
 
 
 @app.get("/webhook/test")
-async def webhook_test():
+async def webhook_test(_admin=ADMIN_DEP):
     """测试端点：发送一个模拟信号"""
     test_signal = TradeSignal(
         symbol="BTCUSDT",
@@ -278,7 +301,7 @@ async def health():
 
 
 @app.get("/api/restart")
-async def api_restart():
+async def api_restart(_admin=ADMIN_DEP):
     """热重启机器人（加载最新代码）"""
     def _restart():
         time.sleep(1)
@@ -287,31 +310,31 @@ async def api_restart():
     return {"status": "restarting"}
 
 @app.get("/api/balance")
-async def api_balance():
+async def api_balance(_admin=ADMIN_DEP):
     """查询账户余额"""
     return okx.get_balance()
 
 
 @app.get("/api/positions")
-async def api_positions():
+async def api_positions(_admin=ADMIN_DEP):
     """查询当前持仓"""
     return okx.get_positions()
 
 
 @app.get("/api/trades")
-async def api_trades():
+async def api_trades(_admin=ADMIN_DEP):
     """查询今日交易"""
     return logger.get_today_trades()
 
 
 @app.get("/api/stats")
-async def api_stats():
+async def api_stats(_admin=ADMIN_DEP):
     """查询交易统计"""
     return logger.get_trade_stats()
 
 
 @app.get("/dashboard")
-async def dashboard():
+async def dashboard(_admin=ADMIN_DEP):
     """实时仪表盘 HTML"""
     balance = okx.get_balance()
     positions = okx.get_positions()
@@ -409,8 +432,14 @@ async def process_trade_signal(signal: TradeSignal, signal_id: int):
 
     # ---- Step 5: 计算仓位大小 ----
     leverage = DEFAULT_LEVERAGE
+    instrument = okx.get_instrument_info(signal.okx_symbol)
     quantity, notional = risk_mgr.calculate_position_size(
-        equity, signal.price, signal.stop_loss
+        equity,
+        signal.price,
+        signal.stop_loss,
+        contract_value=instrument.get("ctVal", 0.001),
+        min_size=instrument.get("minSz", 1),
+        lot_size=instrument.get("lotSz", 1),
     )
     if quantity <= 0:
         msg = "仓位计算异常"
@@ -433,6 +462,7 @@ async def process_trade_signal(signal: TradeSignal, signal_id: int):
         signal.okx_symbol, signal.direction, quantity,
         stop_loss=signal.stop_loss,
         take_profit=signal.take_profit,
+        ord_type="market",
     )
     if not ok:
         msg = f"下单失败: {err}"

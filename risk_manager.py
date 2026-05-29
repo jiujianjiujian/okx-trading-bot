@@ -20,9 +20,34 @@ class RiskManager:
     # 仓位计算
     # ----------------------------------------------------------------
 
+    @staticmethod
+    def normalize_contracts(raw_contracts: float, min_size: float = 1, lot_size: float = 1):
+        """按 OKX 合约最小张数和步进向下取整。"""
+        if raw_contracts <= 0:
+            return 0
+
+        min_size = float(min_size or 1)
+        lot_size = float(lot_size or 1)
+        if lot_size <= 0:
+            lot_size = 1
+
+        steps = int(raw_contracts / lot_size)
+        contracts = steps * lot_size
+        if contracts < min_size:
+            contracts = min_size
+
+        contracts = round(contracts, 8)
+        return int(contracts) if float(contracts).is_integer() else contracts
+
     def calculate_position_size(
-        self, balance: float, entry_price: float, stop_loss: float
-    ) -> tuple[int, float]:
+        self,
+        balance: float,
+        entry_price: float,
+        stop_loss: float,
+        contract_value: float = 0.001,
+        min_size: float = 1,
+        lot_size: float = 1,
+    ) -> tuple[float, float]:
         """
         基于风险比例计算开仓数量
 
@@ -42,21 +67,16 @@ class RiskManager:
         risk_amount = balance * (RISK_PER_TRADE / 100)
         per_contract_risk = abs(entry_price - stop_loss)
 
-        # BTC 合约: 1张=0.001 BTC, ETH 合约: 1张=0.01 ETH
-        # 简化处理：per_contract_risk 是每张的风险（按价格差×面值）
-        # 这里 per_contract_risk 已经是价格差，需要换算
-        # 对于 BTC-USDT-SWAP, 面值=0.001 BTC, 每张风险 = 价格差 × 0.001
-        contract_value = 0.001  # 默认 BTC 合约面值
-
         per_contract_risk_usdt = per_contract_risk * contract_value
 
         if per_contract_risk_usdt <= 0:
             return 0, 0.0
 
-        contracts = int(risk_amount / per_contract_risk_usdt)
+        raw_contracts = risk_amount / per_contract_risk_usdt
+        contracts = self.normalize_contracts(raw_contracts, min_size, lot_size)
         notional = contracts * contract_value * entry_price
 
-        return max(contracts, 1), notional
+        return contracts, notional
 
     # ----------------------------------------------------------------
     # 风险检查

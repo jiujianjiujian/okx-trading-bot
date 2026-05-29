@@ -3,13 +3,15 @@ Telegram 机器人 - 信号通知、交易确认、查询指令
 """
 
 import asyncio
+import atexit
 import contextlib
+import os
 import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.request import HTTPXRequest
 
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PROXY, AUTO_TRADE, DEEPSEEK_API_KEY
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PROXY, TELEGRAM_ENABLED, AUTO_TRADE, DEEPSEEK_API_KEY
 from okx_client import OKXClient
 from trade_logger import TradeLogger
 
@@ -28,6 +30,7 @@ class TelegramBot:
         self.auto_trader = None
         self._thread = None
         self._loop = None
+        self._lock_path = ".telegram_bot.lock"
 
     def set_dependencies(self, okx: OKXClient, logger: TradeLogger, reviewer=None, auto_trader=None):
         self.okx = okx
@@ -41,9 +44,16 @@ class TelegramBot:
 
     def start(self):
         """在后台线程启动 Telegram Bot"""
+        if not TELEGRAM_ENABLED:
+            print("[Telegram] TELEGRAM_ENABLED=false，跳过启动")
+            return
         if not self.token:
             print("[Telegram] 未配置 BOT_TOKEN，跳过启动")
             return
+        if self._another_instance_running():
+            print("[Telegram] 检测到已有轮询实例，跳过启动以避免 getUpdates 冲突")
+            return
+        self._write_lock()
 
         def _run():
             loop = asyncio.new_event_loop()
@@ -73,6 +83,35 @@ class TelegramBot:
 
         self._thread = threading.Thread(target=_run, daemon=True)
         self._thread.start()
+
+    @staticmethod
+    def _pid_running(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def _another_instance_running(self) -> bool:
+        try:
+            with open(self._lock_path, encoding="utf-8") as f:
+                pid = int(f.read().strip() or "0")
+            return pid != os.getpid() and self._pid_running(pid)
+        except (OSError, ValueError):
+            return False
+
+    def _write_lock(self):
+        with open(self._lock_path, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+
+        def _cleanup():
+            with contextlib.suppress(OSError):
+                with open(self._lock_path, encoding="utf-8") as f:
+                    owner_pid = f.read().strip()
+                if owner_pid == str(os.getpid()):
+                    os.remove(self._lock_path)
+
+        atexit.register(_cleanup)
 
     def _register_handlers(self):
         """注册指令处理"""
