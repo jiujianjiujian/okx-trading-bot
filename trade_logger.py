@@ -71,6 +71,24 @@ class TradeLogger:
                 raw_data    TEXT
             )
         """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_orders (
+                order_id    TEXT PRIMARY KEY,
+                time        TEXT NOT NULL,
+                update_time TEXT NOT NULL,
+                symbol      TEXT NOT NULL,
+                mode        TEXT,
+                direction   TEXT,
+                entry       REAL,
+                quantity    REAL,
+                leverage    INTEGER,
+                stop_loss   REAL,
+                take_profit REAL,
+                status      TEXT NOT NULL,
+                trade_id    INTEGER,
+                raw_data    TEXT
+            )
+        """)
         self.conn.commit()
 
     # ----------------------------------------------------------------
@@ -169,6 +187,90 @@ class TradeLogger:
                 (exit_price, pnl, now, trade_id),
             )
             self.conn.commit()
+
+    # ----------------------------------------------------------------
+    # AI 订单状态
+    # ----------------------------------------------------------------
+
+    def log_ai_order(self, decision: dict, quantity: float, order_id: str, status: str = "submitted"):
+        """记录 AI 限价单生命周期。"""
+        now = datetime.now().isoformat()
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO ai_orders (order_id, time, update_time, symbol,
+                   mode, direction, entry, quantity, leverage, stop_loss, take_profit,
+                   status, trade_id, raw_data)
+                   VALUES (?, COALESCE((SELECT time FROM ai_orders WHERE order_id=?), ?),
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    order_id,
+                    order_id,
+                    now,
+                    now,
+                    decision.get("symbol"),
+                    decision.get("mode"),
+                    decision.get("direction"),
+                    decision.get("entry"),
+                    quantity,
+                    decision.get("leverage"),
+                    decision.get("stop_loss"),
+                    decision.get("take_profit"),
+                    status,
+                    decision.get("trade_id"),
+                    json.dumps(decision, ensure_ascii=False, default=str),
+                ),
+            )
+            self.conn.commit()
+
+    def update_ai_order(self, order_id: str, status: str, trade_id: int | None = None):
+        """更新 AI 限价单状态。"""
+        now = datetime.now().isoformat()
+        with self._lock:
+            self.conn.execute(
+                """UPDATE ai_orders
+                   SET status=?, trade_id=COALESCE(?, trade_id), update_time=?
+                   WHERE order_id=?""",
+                (status, trade_id, now, order_id),
+            )
+            self.conn.commit()
+
+    def get_active_ai_orders(self, max_age_hours: int = 24) -> list:
+        """恢复仍可能活跃的 AI 限价单。"""
+        cutoff = (datetime.now() - timedelta(hours=max_age_hours)).isoformat()
+        cursor = self.conn.execute(
+            """SELECT order_id, time, symbol, mode, direction, entry, quantity,
+                      leverage, stop_loss, take_profit, status, trade_id, raw_data
+               FROM ai_orders
+               WHERE status IN ('submitted', 'cancel_failed')
+                 AND update_time>=?
+               ORDER BY time DESC""",
+            (cutoff,),
+        )
+        return cursor.fetchall()
+
+    def get_symbol_loss_stats(self, symbol: str, hours: int = 24) -> dict:
+        """统计单币近期亏损，用于冷却保护。"""
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        cursor = self.conn.execute(
+            """SELECT close_time, pnl FROM trades
+               WHERE symbol=? AND status='closed' AND close_time>=?
+               ORDER BY close_time DESC""",
+            (symbol, cutoff),
+        )
+        rows = cursor.fetchall()
+        losses = [(t, p) for t, p in rows if (p or 0) < 0]
+        minutes_since_loss = None
+        if losses:
+            try:
+                last_loss = datetime.fromisoformat(losses[0][0])
+                minutes_since_loss = (datetime.now() - last_loss).total_seconds() / 60
+            except (TypeError, ValueError):
+                minutes_since_loss = None
+        return {
+            "losses": len(losses),
+            "minutes_since_loss": minutes_since_loss,
+            "last_loss_pnl": losses[0][1] if losses else 0,
+        }
 
     # ----------------------------------------------------------------
     # AI 决策审计

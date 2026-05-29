@@ -37,6 +37,11 @@ MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "5.0"))       # 日内最大�
 AUTO_TRADE = os.getenv("AUTO_TRADE", "false").lower() == "true"  # 是否自动下单
 AI_AUTO_START = os.getenv("AI_AUTO_START", "false").lower() == "true"  # 启动时自动开启AI自主交易
 TRADING_UNIVERSE = os.getenv("TRADING_UNIVERSE", "core").lower()  # core=主流币, dynamic=全市场筛选
+ESTIMATED_FEE_RATE = float(os.getenv("ESTIMATED_FEE_RATE", "0.0005"))  # 单边费率估计
+ESTIMATED_SLIPPAGE_RATE = float(os.getenv("ESTIMATED_SLIPPAGE_RATE", "0.0002"))  # 单边滑点估计
+MIN_NET_RR = float(os.getenv("MIN_NET_RR", "3.0"))                # 扣成本后最低盈亏比
+SYMBOL_COOLDOWN_MINUTES = int(os.getenv("SYMBOL_COOLDOWN_MINUTES", "120"))  # 单币亏损冷却
+SYMBOL_MAX_DAILY_LOSSES = int(os.getenv("SYMBOL_MAX_DAILY_LOSSES", "2"))    # 单币日内最大亏损次数
 
 # ============================================
 # Webhook 配置

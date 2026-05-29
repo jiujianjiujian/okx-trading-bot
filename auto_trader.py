@@ -26,6 +26,8 @@ from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, PROXY_URL,
     MAX_DAILY_LOSS, AUTO_TRADE, TRADING_UNIVERSE,
     MIN_LEVERAGE, MAX_LEVERAGE,
+    ESTIMATED_FEE_RATE, ESTIMATED_SLIPPAGE_RATE, MIN_NET_RR,
+    SYMBOL_COOLDOWN_MINUTES, SYMBOL_MAX_DAILY_LOSSES,
 )
 from risk_manager import RiskManager
 from okx_client import OKXClient
@@ -1077,20 +1079,42 @@ class AutoTrader:
         return p
 
     @staticmethod
-    def _trade_geometry(entry: float, sl: float, tp: float, direction: str) -> dict:
+    def _trade_geometry(
+        entry: float,
+        sl: float,
+        tp: float,
+        direction: str,
+        fee_rate: float = ESTIMATED_FEE_RATE,
+        slippage_rate: float = ESTIMATED_SLIPPAGE_RATE,
+    ) -> dict:
         """校验止损止盈方向，并计算盈亏比。"""
         if entry <= 0:
-            return {"ok": False, "reason": "入场价异常", "rr": 0, "sl_pct": 0}
+            return {"ok": False, "reason": "入场价异常", "rr": 0, "net_rr": 0, "sl_pct": 0}
         if (direction == "long" and sl >= entry) or (direction == "short" and sl <= entry):
-            return {"ok": False, "reason": "止损方向错误，禁止开仓", "rr": 0, "sl_pct": 0}
+            return {"ok": False, "reason": "止损方向错误，禁止开仓", "rr": 0, "net_rr": 0, "sl_pct": 0}
         if (direction == "long" and tp <= entry) or (direction == "short" and tp >= entry):
-            return {"ok": False, "reason": "止盈方向错误，禁止小赚大亏结构", "rr": 0, "sl_pct": 0}
+            return {"ok": False, "reason": "止盈方向错误，禁止小赚大亏结构", "rr": 0, "net_rr": 0, "sl_pct": 0}
 
         risk_dist = abs(entry - sl)
         profit_dist = abs(tp - entry)
         rr = profit_dist / risk_dist if risk_dist > 0 else 0
         sl_pct = risk_dist / entry * 100
-        return {"ok": rr > 0, "reason": "", "rr": rr, "sl_pct": sl_pct}
+        cost_rate = max(0, fee_rate) + max(0, slippage_rate)
+        profit_cost = (entry + tp) * cost_rate
+        loss_cost = (entry + sl) * cost_rate
+        net_profit = profit_dist - profit_cost
+        net_loss = risk_dist + loss_cost
+        net_rr = net_profit / net_loss if net_profit > 0 and net_loss > 0 else 0
+        return {
+            "ok": rr > 0 and net_rr > 0,
+            "reason": "" if net_rr > 0 else "扣除手续费滑点后无有效利润空间",
+            "rr": rr,
+            "net_rr": net_rr,
+            "sl_pct": sl_pct,
+            "cost_rate": cost_rate,
+            "net_profit_dist": net_profit,
+            "net_loss_dist": net_loss,
+        }
 
     def _adaptive_leverage(
         self,
@@ -1210,6 +1234,33 @@ class AutoTrader:
             trs.append(tr)
         return sum(trs[-period:]) / len(trs[-period:]) if trs else 1.0
 
+    def _restore_pending_orders(self):
+        """从 SQLite 恢复重启前仍未完成的 AI 限价单。"""
+        restored = 0
+        with contextlib.suppress(Exception):
+            for row in self.logger.get_active_ai_orders(max_age_hours=24):
+                (oid, time_str, symbol, _mode, _direction, entry, qty, _lev,
+                 _sl, _tp, _status, trade_id, raw_data) = row
+                try:
+                    created = datetime.fromisoformat(time_str).timestamp()
+                    decision = json.loads(raw_data) if raw_data else {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    created = time.time()
+                    decision = {}
+                self.pending_orders[oid] = {
+                    "symbol": symbol,
+                    "entry": entry,
+                    "qty": qty,
+                    "time": created,
+                    "timeout": 300,
+                    "notified": True,
+                    "trade_id": trade_id,
+                    "decision": decision,
+                }
+                restored += 1
+        if restored:
+            print(f"[订单恢复] 已恢复{restored}个AI限价单")
+
     def _check_pending_orders(self, send):
         """检查限价单是否超时未成交，超时则取消并通知"""
         expired = []
@@ -1227,12 +1278,20 @@ class AutoTrader:
             with contextlib.suppress(ValueError, TypeError):
                 avg_px = float(order.get("avgPx") or 0)
 
+            if state in ("canceled", "mmp_canceled"):
+                if hasattr(self, "logger"):
+                    self.logger.update_ai_order(oid, "canceled")
+                expired.append(oid)
+                continue
+
             if state == "filled" or (fill_qty > 0 and fill_qty >= info.get("qty", 0)):
                 if not info.get("trade_id"):
                     decision = dict(info.get("decision", {}))
                     if avg_px > 0:
                         decision["entry"] = avg_px
                     info["trade_id"] = self.logger.log_auto_trade(decision, fill_qty or info["qty"], oid)
+                if hasattr(self, "logger"):
+                    self.logger.update_ai_order(oid, "filled", info.get("trade_id"))
                 if not info["notified"]:
                     send(f"✅ *限价单已成交*\n📌 {info['symbol']} | 均价${avg_px or info['entry']:,.4f} | {fill_qty or info['qty']}张")
                 expired.append(oid)
@@ -1251,6 +1310,13 @@ class AutoTrader:
                     if avg_px > 0:
                         decision["entry"] = avg_px
                     info["trade_id"] = self.logger.log_auto_trade(decision, fill_qty, oid)
+                if ok:
+                    status = "partial" if partially_filled or possibly_filled else "canceled"
+                    if hasattr(self, "logger"):
+                        self.logger.update_ai_order(oid, status, info.get("trade_id"))
+                else:
+                    if hasattr(self, "logger"):
+                        self.logger.update_ai_order(oid, "cancel_failed", info.get("trade_id"))
                 if not info["notified"]:
                     if partially_filled:
                         fill_text = f"已成交{fill_qty:g}张，已撤剩余委托"
@@ -1561,6 +1627,10 @@ class AutoTrader:
         rr = geometry["rr"]
         if rr < adjusted["min_rr"]:
             return {"action":"WAIT","reason":f"盈亏比{rr:.1f}<{adjusted['min_rr']}，禁止盈利小亏损大","market":main,"mode":mode}
+        net_rr = geometry["net_rr"]
+        min_net_rr = max(MIN_NET_RR, adjusted["min_rr"])
+        if net_rr < min_net_rr:
+            return {"action":"WAIT","reason":f"净盈亏比{net_rr:.1f}<{min_net_rr}，扣除手续费/滑点后不交易","market":main,"mode":mode}
 
         sl_pct = geometry["sl_pct"]
         if sl_pct > hard["max_stop_pct"]:
@@ -1624,7 +1694,8 @@ class AutoTrader:
         return {"action":action,"direction":direction,"symbol":symbol,"mode":mode,"entry":entry,
                 "stop_loss":sl,"take_profit":tp,"leverage":lev,"confidence":conf,
                 "trailing_pct":float(decision.get("trailing_pct",params["trailing_pct"])),
-                "risk_reward":round(rr,2),"liquidation":round(liq,1),
+                "risk_reward":round(rr,2),"net_risk_reward":round(net_rr,2),
+                "liquidation":round(liq,1),
                 "liq_buffer":round(buf,1),"risk_pct":adjusted["risk_pct"],
                 "reason":decision.get("reason",""),"market":main,"regime":regime,
                 "paul_wei_score": pw_score}
@@ -1645,6 +1716,26 @@ class AutoTrader:
         balance = self.okx.get_balance()
         equity = balance.get("equity", 0)
         if equity <= 0: return False, "账户权益异常"
+
+        geometry = self._trade_geometry(
+            float(d.get("entry", 0)),
+            float(d.get("stop_loss", 0)),
+            float(d.get("take_profit", 0)),
+            d.get("direction", ""),
+        )
+        if not geometry["ok"]:
+            return False, geometry["reason"]
+        mode = d.get("mode", "scalp")
+        rr_floor = max(MIN_NET_RR, self.HARD_RULES.get(mode, {}).get("min_rr", MIN_NET_RR))
+        if geometry["net_rr"] < rr_floor:
+            return False, f"净盈亏比{geometry['net_rr']:.1f}<{rr_floor}，扣成本后不交易"
+
+        loss_stats = self.logger.get_symbol_loss_stats(d["symbol"], hours=24)
+        mins = loss_stats.get("minutes_since_loss")
+        if mins is not None and mins < SYMBOL_COOLDOWN_MINUTES:
+            return False, f"{d['symbol']} 刚亏损{mins:.0f}分钟，冷却{SYMBOL_COOLDOWN_MINUTES}分钟"
+        if loss_stats.get("losses", 0) >= SYMBOL_MAX_DAILY_LOSSES:
+            return False, f"{d['symbol']} 24小时亏损{loss_stats['losses']}次，暂停该币"
 
         # ---- 0. 交易所健康 ----
         ex_health = self._exchange_health()
@@ -2318,6 +2409,7 @@ class AutoTrader:
             send(f"{em} {analysis_summary}")
             # 追踪限价单
             timeout = 120 if d["mode"] == "scalp" else 300
+            self.logger.log_ai_order(d, qty, oid, status="submitted")
             self.pending_orders[oid] = {
                 "symbol": d["symbol"], "entry": d["entry"], "qty": qty,
                 "time": time.time(), "timeout": timeout, "notified": False,
@@ -2640,6 +2732,7 @@ class AutoTrader:
 
         # 启动清算追踪
         self.liq_tracker.start()
+        self._restore_pending_orders()
 
         while self._running:
             try:

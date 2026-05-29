@@ -252,6 +252,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         good = AutoTrader._trade_geometry(100, 98, 106, "long")
         self.assertTrue(good["ok"])
         self.assertEqual(good["rr"], 3.0)
+        self.assertLess(good["net_rr"], good["rr"])
 
         bad_tp = AutoTrader._trade_geometry(100, 98, 99, "long")
         self.assertFalse(bad_tp["ok"])
@@ -502,6 +503,24 @@ class ExecutionSafetyTests(unittest.TestCase):
             }, 2, "order-1")
             self.assertGreater(trade_id, 0)
             self.assertEqual(logger.get_today_trades()[0][4], "long")
+
+            logger.log_ai_order({
+                "symbol": "BTC-USDT-SWAP",
+                "mode": "scalp",
+                "direction": "long",
+                "entry": 100,
+                "leverage": 10,
+                "stop_loss": 95,
+                "take_profit": 115,
+            }, 2, "order-2")
+            active = logger.get_active_ai_orders()
+            self.assertEqual(active[0][0], "order-2")
+            logger.update_ai_order("order-2", "canceled")
+            self.assertEqual(logger.get_active_ai_orders(), [])
+
+            logger.close_trade(trade_id, 90, -2.5)
+            losses = logger.get_symbol_loss_stats("BTC-USDT-SWAP")
+            self.assertEqual(losses["losses"], 1)
         finally:
             logger.close()
             os.remove(path)
@@ -573,6 +592,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         try:
             ok = trader.execute(decision, messages.append)
             trades = logger.get_today_trades()
+            orders = logger.get_active_ai_orders()
         finally:
             logger.close()
             os.remove(path)
@@ -580,6 +600,7 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(trader.okx.placed[0][0], "BTC-USDT-SWAP")
         self.assertEqual(len(trades), 0)
+        self.assertEqual(orders[0][0], "order-1")
         self.assertIn("order-1", trader.pending_orders)
         self.assertEqual(trader.pending_orders["order-1"]["decision"]["symbol"], "BTC-USDT-SWAP")
 
