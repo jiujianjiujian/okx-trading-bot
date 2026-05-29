@@ -46,6 +46,15 @@ MARKET_GRAPH_ENABLED = os.getenv("MARKET_GRAPH_ENABLED", "true").lower() == "tru
 MARKET_GRAPH_MIN_EDGE = float(os.getenv("MARKET_GRAPH_MIN_EDGE", "60"))             # 最低方向优势
 MARKET_GRAPH_MAX_CONFLICT = float(os.getenv("MARKET_GRAPH_MAX_CONFLICT", "35"))     # 最大信号冲突
 MARKET_GRAPH_MIN_LIQUIDITY = float(os.getenv("MARKET_GRAPH_MIN_LIQUIDITY", "55"))   # 最低流动性评分
+KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))                         # 分数凯利比例
+KELLY_PRIOR_WIN_RATE = float(os.getenv("KELLY_PRIOR_WIN_RATE", "0.45"))             # 样本不足时先验胜率
+KELLY_PRIOR_TRADES = int(os.getenv("KELLY_PRIOR_TRADES", "20"))                     # 先验样本权重
+KELLY_NO_HISTORY_CONF_CAP = float(os.getenv("KELLY_NO_HISTORY_CONF_CAP", "0.52"))   # 无历史时AI胜率上限
+KELLY_MIN_EDGE_PCT = float(os.getenv("KELLY_MIN_EDGE_PCT", "2.0"))                  # 高于盈亏平衡的最小优势
+KELLY_MAX_RISK_PCT = float(os.getenv("KELLY_MAX_RISK_PCT", "0.75"))                 # 凯利单笔风险上限%
+MIN_EFFECTIVE_NOTIONAL = float(os.getenv("MIN_EFFECTIVE_NOTIONAL", "20"))           # 最小有效名义价值USDT
+MIN_AVAILABLE_BALANCE = float(os.getenv("MIN_AVAILABLE_BALANCE", "10"))             # 最低可用余额USDT
+MAX_TRADE_MARGIN_USAGE_PCT = float(os.getenv("MAX_TRADE_MARGIN_USAGE_PCT", "30"))   # 单笔最多占用可用保证金%
 
 # ============================================
 # Webhook 配置

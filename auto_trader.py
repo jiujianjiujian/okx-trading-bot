@@ -30,6 +30,9 @@ from config import (
     SYMBOL_COOLDOWN_MINUTES, SYMBOL_MAX_DAILY_LOSSES,
     MARKET_GRAPH_ENABLED, MARKET_GRAPH_MIN_EDGE,
     MARKET_GRAPH_MAX_CONFLICT, MARKET_GRAPH_MIN_LIQUIDITY,
+    KELLY_FRACTION, KELLY_PRIOR_WIN_RATE, KELLY_PRIOR_TRADES,
+    KELLY_NO_HISTORY_CONF_CAP, KELLY_MIN_EDGE_PCT, KELLY_MAX_RISK_PCT,
+    MIN_EFFECTIVE_NOTIONAL, MIN_AVAILABLE_BALANCE, MAX_TRADE_MARGIN_USAGE_PCT,
 )
 from risk_manager import RiskManager
 from okx_client import OKXClient
@@ -1159,6 +1162,121 @@ class AutoTrader:
             "cost_rate": cost_rate,
             "net_profit_dist": net_profit,
             "net_loss_dist": net_loss,
+        }
+
+    @staticmethod
+    def _bayes_rate(wins: int, total: int) -> float:
+        prior_n = max(0, KELLY_PRIOR_TRADES)
+        prior_p = max(0.01, min(0.99, KELLY_PRIOR_WIN_RATE))
+        return (wins + prior_p * prior_n) / (total + prior_n) if total + prior_n > 0 else prior_p
+
+    def _calibrated_win_probability(self, symbol: str, confidence: int) -> dict:
+        """Blend AI confidence with realized trade statistics for Kelly sizing."""
+        ai_p = max(0.35, min(0.72, (confidence or 0) / 100))
+        source = "no_history"
+        stats = {"total": 0, "wins": 0, "payoff_ratio": 0}
+        try:
+            symbol_stats = self.logger.get_closed_trade_stats(symbol=symbol, days=60)
+            global_stats = self.logger.get_closed_trade_stats(days=60)
+        except Exception:
+            symbol_stats = {"total": 0, "wins": 0, "payoff_ratio": 0}
+            global_stats = {"total": 0, "wins": 0, "payoff_ratio": 0}
+
+        if symbol_stats.get("total", 0) >= 10:
+            stats = symbol_stats
+            hist_p = self._bayes_rate(stats["wins"], stats["total"])
+            p = hist_p * 0.75 + ai_p * 0.25
+            source = "symbol_history"
+        elif global_stats.get("total", 0) >= 10:
+            stats = global_stats
+            hist_p = self._bayes_rate(stats["wins"], stats["total"])
+            p = hist_p * 0.65 + ai_p * 0.35
+            source = "global_history"
+        else:
+            p = min(ai_p, KELLY_NO_HISTORY_CONF_CAP)
+
+        return {
+            "p": max(0.30, min(0.72, p)),
+            "ai_p": ai_p,
+            "source": source,
+            "sample_size": stats.get("total", 0),
+            "payoff_ratio": stats.get("payoff_ratio", 0),
+        }
+
+    def _kelly_risk_profile(self, d: dict) -> dict:
+        """Return conservative fractional-Kelly risk sizing in account-fraction units."""
+        confidence = int(d.get("confidence", 50) or 50)
+        b = float(d.get("net_risk_reward") or d.get("risk_reward") or 1.1)
+        hist = self._calibrated_win_probability(d.get("symbol", ""), confidence)
+        if hist["payoff_ratio"] and hist["sample_size"] >= 10:
+            b = min(b, max(1.05, hist["payoff_ratio"]))
+        b = max(1.05, min(6.0, b))
+
+        p = hist["p"]
+        q = 1 - p
+        breakeven_p = 1 / (b + 1)
+        edge_pct = (p - breakeven_p) * 100
+        raw_kelly = (p * b - q) / b
+        fractional_kelly = max(0.0, raw_kelly) * max(0.0, min(1.0, KELLY_FRACTION))
+        max_kelly_risk = max(0.0, KELLY_MAX_RISK_PCT) / 100
+        risk_fraction = min(fractional_kelly, max_kelly_risk)
+
+        return {
+            "allow": raw_kelly > 0 and edge_pct >= KELLY_MIN_EDGE_PCT and risk_fraction > 0,
+            "risk_fraction": risk_fraction,
+            "p": p,
+            "ai_p": hist["ai_p"],
+            "b": b,
+            "breakeven_p": breakeven_p,
+            "edge_pct": edge_pct,
+            "raw_kelly": raw_kelly,
+            "fractional_kelly": fractional_kelly,
+            "source": hist["source"],
+            "sample_size": hist["sample_size"],
+        }
+
+    def _account_trade_capacity(
+        self,
+        balance: dict,
+        positions: list,
+        symbol: str,
+        direction: str,
+        qty: float,
+        entry: float,
+        leverage: int,
+        ct_val: float,
+    ) -> dict:
+        equity = float(balance.get("equity", 0) or 0)
+        available = float(balance.get("available", equity) or 0)
+        if equity <= 0:
+            return {"ok": False, "reason": "账户权益异常"}
+        if available < MIN_AVAILABLE_BALANCE:
+            return {"ok": False, "reason": f"可用余额{available:.2f}U<{MIN_AVAILABLE_BALANCE:.2f}U"}
+
+        same_symbol = [p for p in positions if p.get("instId") == symbol]
+        if same_symbol:
+            same_dir = any(p.get("side") == direction for p in same_symbol)
+            if not same_dir:
+                return {"ok": False, "reason": f"{symbol} 已有反向持仓，禁止自动对冲/反手"}
+            if not same_symbol[0].get("upl", 0) > 0:
+                return {"ok": False, "reason": f"{symbol} 已有同向持仓但未浮盈，不加仓"}
+
+        notional = qty * entry * ct_val
+        margin_required = notional / max(leverage, 1)
+        if notional < MIN_EFFECTIVE_NOTIONAL:
+            return {"ok": False, "reason": f"名义价值{notional:.2f}U<{MIN_EFFECTIVE_NOTIONAL:.2f}U，无效小单"}
+        max_margin = available * max(0.01, MAX_TRADE_MARGIN_USAGE_PCT) / 100
+        if margin_required > max_margin:
+            return {
+                "ok": False,
+                "reason": f"预估保证金{margin_required:.2f}U>{MAX_TRADE_MARGIN_USAGE_PCT:.0f}%可用余额({max_margin:.2f}U)",
+            }
+        return {
+            "ok": True,
+            "equity": equity,
+            "available": available,
+            "notional": notional,
+            "margin_required": margin_required,
         }
 
     def _adaptive_leverage(
@@ -2333,10 +2451,15 @@ class AutoTrader:
             send(f"⛔ 风控拦截: {reason}")
             return False
 
-        equity = self.okx.get_balance().get("equity",0)
+        balance = self.okx.get_balance()
+        equity = balance.get("equity", 0)
         positions = self.okx.get_positions()
         if len(positions) >= self.safety["max_positions_total"]:
             send("⛔ 仓位已满"); return False
+
+        if any(p.get("instId") == d["symbol"] and p.get("side") != d["direction"] for p in positions):
+            send(f"⛔ {d['symbol']} 已有反向持仓，禁止自动反手")
+            return False
 
         ok, lev_msg = self.okx.set_leverage(d["symbol"], d["leverage"])
         if not ok:
@@ -2347,15 +2470,20 @@ class AutoTrader:
         ms = self._microstructure(d["symbol"])
 
         # ================================================================
-        # 凯利仓位: f* = (p×b−q) / b
-        confidence = d.get("confidence", 50)
-        p = confidence / 100                 # 胜率估计
-        b = max(d.get("risk_reward", 1.5), 1.1)  # 盈亏比 (最低1.1防止除零)
-        q = 1 - p
-        kelly_f = (p * b - q) / b
-        kelly_f = max(0.005, min(kelly_f, 0.05))  # 夹0.5%-5% (quarter-Kelly安全边际)
-        hard_risk_pct = min(d.get("risk_pct", self.safety["max_risk_pct"]), self.safety["max_risk_pct"]) / 100
-        risk_pct = min(kelly_f * 0.5, hard_risk_pct)
+        # 分数凯利仓位: 用历史统计校准 AI 置信度，只负责仓位大小。
+        kelly = self._kelly_risk_profile(d)
+        if not kelly["allow"]:
+            send(
+                f"⛔ 凯利期望不足: p={kelly['p']:.1%}, "
+                f"盈亏比={kelly['b']:.2f}, 优势={kelly['edge_pct']:.1f}%"
+            )
+            return False
+        hard_risk_pct = min(
+            d.get("risk_pct", self.safety["max_risk_pct"]),
+            self.safety["max_risk_pct"],
+            KELLY_MAX_RISK_PCT,
+        ) / 100
+        risk_pct = min(kelly["risk_fraction"], hard_risk_pct)
         risk_amount = equity * risk_pct
         price_risk = abs(d["entry"]-d["stop_loss"])
         instrument = self.okx.get_instrument_info(d["symbol"])
@@ -2366,6 +2494,14 @@ class AutoTrader:
         qty = self.risk.normalize_contracts(raw_qty, min_sz, lot_sz)
         if qty <= 0:
             send("⛔ 仓位计算异常")
+            return False
+
+        capacity = self._account_trade_capacity(
+            balance, positions, d["symbol"], d["direction"],
+            qty, d["entry"], d["leverage"], ct_val,
+        )
+        if not capacity["ok"]:
+            send(f"⛔ 账户/仓位检查失败: {capacity['reason']}")
             return False
 
         # ================================================================
@@ -2414,7 +2550,16 @@ class AutoTrader:
             qty = self.risk.normalize_contracts(qty * 0.5, min_sz, lot_sz)
 
         qty = self.risk.normalize_contracts(qty, min_sz, lot_sz)
+        capacity = self._account_trade_capacity(
+            balance, positions, d["symbol"], d["direction"],
+            qty, d["entry"], d["leverage"], ct_val,
+        )
+        if not capacity["ok"]:
+            send(f"⛔ 仓位调整后无效: {capacity['reason']}")
+            return False
         d["quantity"] = qty
+        d["kelly"] = kelly
+        d["account_capacity"] = capacity
 
         # === 执行质量检查 ===
         # entry_deviation calculated but reserved for future use
@@ -2466,6 +2611,8 @@ class AutoTrader:
             # 关键分析摘要
             regime_info = d.get("regime", {})
             graph_info = d.get("market_graph", {})
+            kelly_info = d.get("kelly", {})
+            capacity_info = d.get("account_capacity", {})
             graph_line = ""
             if graph_info:
                 graph_line = (
@@ -2473,6 +2620,20 @@ class AutoTrader:
                     f"优势{graph_info.get('edge_score',0):.0f} | "
                     f"冲突{graph_info.get('conflict_score',0):.0f} | "
                     f"流动性{graph_info.get('liquidity_score',0):.0f}"
+                )
+            kelly_line = ""
+            if kelly_info:
+                kelly_line = (
+                    f"\n📏 凯利: p={kelly_info.get('p',0):.1%} | "
+                    f"风险{kelly_info.get('risk_fraction',0)*100:.2f}% | "
+                    f"样本{kelly_info.get('sample_size',0)}"
+                )
+            account_line = ""
+            if capacity_info:
+                account_line = (
+                    f"\n💼 账户: 可用{capacity_info.get('available',0):.1f}U | "
+                    f"名义{capacity_info.get('notional',0):.1f}U | "
+                    f"保证金{capacity_info.get('margin_required',0):.1f}U"
                 )
             analysis_summary = (
                 f"📊 *{mode_cn} {d['symbol']} {dc}* | 置信{d['confidence']}/100\n\n"
@@ -2482,7 +2643,7 @@ class AutoTrader:
                 f"🧠 *分析:* {d.get('reason','')}\n\n"
                 f"🏷 市场状态: {regime_info.get('market_regime','')} | "
                 f"风险: {regime_info.get('risk_level','')}\n"
-                f"📍 偏置: {regime_info.get('direction_bias','')}{graph_line}"
+                f"📍 偏置: {regime_info.get('direction_bias','')}{graph_line}{kelly_line}{account_line}"
             )
             send(f"{em} {analysis_summary}")
             # 追踪限价单

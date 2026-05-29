@@ -331,6 +331,37 @@ class TradeLogger:
         )
         return cursor.fetchall()
 
+    def get_closed_trade_stats(self, symbol: str | None = None, days: int = 60) -> dict:
+        """获取近期已平仓交易统计，用于仓位胜率校准。"""
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        params: list = [cutoff]
+        where = "status='closed' AND close_time>=?"
+        if symbol:
+            where += " AND symbol=?"
+            params.append(symbol)
+        cursor = self.conn.execute(
+            f"""SELECT pnl FROM trades
+                WHERE {where}
+                ORDER BY close_time DESC""",
+            params,
+        )
+        pnls = [float(row[0] or 0) for row in cursor.fetchall()]
+        wins = [p for p in pnls if p > 0]
+        losses = [abs(p) for p in pnls if p < 0]
+        total = len(pnls)
+        avg_win = sum(wins) / len(wins) if wins else 0.0
+        avg_loss = sum(losses) / len(losses) if losses else 0.0
+        payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0.0
+        return {
+            "total": total,
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": len(wins) / total if total else 0.0,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "payoff_ratio": payoff_ratio,
+        }
+
     def get_recent_ai_decisions(self, limit: int = 100) -> list:
         """获取最近 AI 决策审计记录。"""
         limit = max(1, min(int(limit), 500))

@@ -353,6 +353,60 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertGreater(high_quality, high_risk)
         self.assertEqual(high_risk, 10)
 
+    def test_kelly_uses_conservative_no_history_cap(self):
+        class FakeLogger:
+            def get_closed_trade_stats(self, symbol=None, days=60):
+                return {"total": 0, "wins": 0, "payoff_ratio": 0}
+
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.logger = FakeLogger()
+
+        profile = trader._kelly_risk_profile({
+            "symbol": "BTC-USDT-SWAP",
+            "confidence": 90,
+            "net_risk_reward": 3.0,
+        })
+
+        self.assertTrue(profile["allow"])
+        self.assertLessEqual(profile["p"], 0.52)
+        self.assertLessEqual(profile["risk_fraction"], 0.0075)
+
+    def test_account_capacity_blocks_invalid_orders(self):
+        trader = AutoTrader.__new__(AutoTrader)
+        balance = {"equity": 1000, "available": 5}
+
+        low_balance = trader._account_trade_capacity(
+            balance, [], "BTC-USDT-SWAP", "long", 1, 100, 10, 1,
+        )
+        self.assertFalse(low_balance["ok"])
+        self.assertIn("可用余额", low_balance["reason"])
+
+        reverse = trader._account_trade_capacity(
+            {"equity": 1000, "available": 1000},
+            [{"instId": "BTC-USDT-SWAP", "side": "short", "upl": 1}],
+            "BTC-USDT-SWAP",
+            "long",
+            1,
+            100,
+            10,
+            1,
+        )
+        self.assertFalse(reverse["ok"])
+        self.assertIn("反向持仓", reverse["reason"])
+
+        valid = trader._account_trade_capacity(
+            {"equity": 1000, "available": 1000},
+            [],
+            "BTC-USDT-SWAP",
+            "long",
+            5,
+            100,
+            10,
+            1,
+        )
+        self.assertTrue(valid["ok"])
+        self.assertEqual(valid["notional"], 500)
+
     def test_daily_optimize_reports_but_does_not_mutate_hard_params(self):
         class FakeLogger:
             def get_today_trades(self):
