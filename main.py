@@ -86,6 +86,11 @@ def acquire_instance_lock(path: str = ".okx_bot.lock"):
     return lock_file
 
 
+INSTANCE_LOCK = None
+if __name__ == "__main__":
+    INSTANCE_LOCK = acquire_instance_lock()
+
+
 # ============================================================
 # 初始化模块
 # ============================================================
@@ -538,7 +543,6 @@ async def process_trade_signal(signal: TradeSignal, signal_id: int):
 # ============================================================
 
 if __name__ == "__main__":
-    instance_lock = acquire_instance_lock()
     uvicorn.run(
         app,
         host="0.0.0.0",
