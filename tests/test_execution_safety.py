@@ -241,11 +241,55 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         adjusted = trader._session_adjust(trader.scalp)
 
-        self.assertLessEqual(adjusted["leverage"], 5)
+        self.assertGreaterEqual(adjusted["leverage"], 10)
+        self.assertLessEqual(adjusted["leverage"], 18)
         self.assertLessEqual(adjusted["risk_pct"], 0.25)
         self.assertGreaterEqual(adjusted["min_confidence"], 78)
-        self.assertGreaterEqual(adjusted["min_rr"], 2.6)
+        self.assertGreaterEqual(adjusted["min_rr"], 3.0)
         self.assertEqual(adjusted["max_positions"], 1)
+
+    def test_trade_geometry_rejects_small_profit_large_loss(self):
+        good = AutoTrader._trade_geometry(100, 98, 106, "long")
+        self.assertTrue(good["ok"])
+        self.assertEqual(good["rr"], 3.0)
+
+        bad_tp = AutoTrader._trade_geometry(100, 98, 99, "long")
+        self.assertFalse(bad_tp["ok"])
+        self.assertIn("止盈方向错误", bad_tp["reason"])
+
+        small_profit = AutoTrader._trade_geometry(100, 95, 102, "long")
+        self.assertTrue(small_profit["ok"])
+        self.assertLess(small_profit["rr"], 1.0)
+
+    def test_adaptive_leverage_stays_within_10_to_25(self):
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.safety = AutoTrader.HARD_RULES["safety"]
+
+        high_quality = trader._adaptive_leverage(
+            requested=25,
+            mode="scalp",
+            confidence=92,
+            rr=3.8,
+            tf_edge=0.2,
+            sl_pct=0.8,
+            risk_level="low",
+            chain_signal="neutral",
+        )
+        high_risk = trader._adaptive_leverage(
+            requested=25,
+            mode="scalp",
+            confidence=92,
+            rr=3.8,
+            tf_edge=0.2,
+            sl_pct=3.0,
+            risk_level="high",
+            chain_signal="danger",
+        )
+
+        self.assertGreaterEqual(high_quality, 10)
+        self.assertLessEqual(high_quality, 25)
+        self.assertGreater(high_quality, high_risk)
+        self.assertEqual(high_risk, 10)
 
     def test_daily_optimize_reports_but_does_not_mutate_hard_params(self):
         class FakeLogger:

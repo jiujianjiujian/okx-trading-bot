@@ -29,7 +29,9 @@ PROXY_URL = os.getenv("PROXY_URL", "")  # 通用代理，OKX 等使用
 # 交易风控参数
 # ============================================
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "2.0"))      # 单笔风险 %
-DEFAULT_LEVERAGE = int(os.getenv("DEFAULT_LEVERAGE", "3"))       # 默认杠杆
+DEFAULT_LEVERAGE = int(os.getenv("DEFAULT_LEVERAGE", "10"))      # 默认杠杆
+MIN_LEVERAGE = int(os.getenv("MIN_LEVERAGE", "10"))              # 允许的最低杠杆
+MAX_LEVERAGE = int(os.getenv("MAX_LEVERAGE", "25"))              # 允许的最高杠杆
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "3"))             # 最大持仓数
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "5.0"))       # 日内最大亏损 %
 AUTO_TRADE = os.getenv("AUTO_TRADE", "false").lower() == "true"  # 是否自动下单

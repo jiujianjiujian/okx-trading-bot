@@ -25,6 +25,7 @@ import http_wrapper as requests
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, PROXY_URL,
     MAX_DAILY_LOSS, AUTO_TRADE, TRADING_UNIVERSE,
+    MIN_LEVERAGE, MAX_LEVERAGE,
 )
 from risk_manager import RiskManager
 from okx_client import OKXClient
@@ -66,10 +67,10 @@ class AutoTrader:
     HARD_RULES: ClassVar[dict] = {
         # AI 可以选方向，但不能放宽这些硬边界。
         "scalp": {
-            "leverage": 5,
+            "leverage": 18,
             "risk_pct": 0.25,
             "min_confidence": 78,
-            "min_rr": 2.6,
+            "min_rr": 3.0,
             "tp_sl_ratio": 3.0,
             "max_positions": 1,
             "min_tf_score": 0.62,
@@ -77,10 +78,10 @@ class AutoTrader:
             "min_stop_pct": 0.15,
         },
         "swing": {
-            "leverage": 3,
+            "leverage": 12,
             "risk_pct": 0.60,
             "min_confidence": 75,
-            "min_rr": 3.0,
+            "min_rr": 3.2,
             "tp_sl_ratio": 3.5,
             "max_positions": 1,
             "min_tf_score": 0.64,
@@ -88,7 +89,8 @@ class AutoTrader:
             "min_stop_pct": 0.35,
         },
         "safety": {
-            "max_leverage": 8,
+            "min_leverage": MIN_LEVERAGE,
+            "max_leverage": MAX_LEVERAGE,
             "max_risk_pct": 0.75,
             "max_positions_total": 2,
             "max_daily_loss_pct": 1.5,
@@ -115,12 +117,12 @@ class AutoTrader:
         self._factor_miner = None  # 延迟初始化，避免 API key 检查
 
         # ---- 参数 ----
-        self.scalp = {"enabled":True,"leverage":5,"risk_pct":0.25,"min_confidence":78,
-                      "min_rr":2.6,"tp_sl_ratio":3.0,"trailing_pct":0.3,
+        self.scalp = {"enabled":True,"leverage":18,"risk_pct":0.25,"min_confidence":78,
+                      "min_rr":3.0,"tp_sl_ratio":3.0,"trailing_pct":0.3,
                       "max_positions":1,"interval":300,
                       "timeframes":["1m","5m","15m"],"atr_mult_sl":1.5,"atr_mult_tp":4.0}
-        self.swing = {"enabled":True,"leverage":3,"risk_pct":0.60,"min_confidence":75,
-                      "min_rr":3.0,"tp_sl_ratio":3.5,"trailing_pct":1.0,
+        self.swing = {"enabled":True,"leverage":12,"risk_pct":0.60,"min_confidence":75,
+                      "min_rr":3.2,"tp_sl_ratio":3.5,"trailing_pct":1.0,
                       "max_positions":1,"interval":3600,
                       "timeframes":["1H","4H","1D"],"atr_mult_sl":2.0,"atr_mult_tp":6.0}
 
@@ -1047,7 +1049,9 @@ class AutoTrader:
         mode = "scalp" if params is self.scalp else "swing"
         floor = self.HARD_RULES[mode]
 
-        p["leverage"] = min(p["leverage"], floor["leverage"], self.safety["max_leverage"])
+        min_lev = int(self.safety.get("min_leverage", 10))
+        max_lev = int(self.safety.get("max_leverage", 25))
+        p["leverage"] = max(min_lev, min(int(p["leverage"]), floor["leverage"], max_lev))
         p["risk_pct"] = min(p["risk_pct"], floor["risk_pct"], self.safety["max_risk_pct"])
         p["min_confidence"] = max(p["min_confidence"], floor["min_confidence"])
         p["min_rr"] = max(p["min_rr"], floor["min_rr"])
@@ -1071,6 +1075,61 @@ class AutoTrader:
             p["min_confidence"] += 5
             p["min_rr"] += 0.3
         return p
+
+    @staticmethod
+    def _trade_geometry(entry: float, sl: float, tp: float, direction: str) -> dict:
+        """校验止损止盈方向，并计算盈亏比。"""
+        if entry <= 0:
+            return {"ok": False, "reason": "入场价异常", "rr": 0, "sl_pct": 0}
+        if (direction == "long" and sl >= entry) or (direction == "short" and sl <= entry):
+            return {"ok": False, "reason": "止损方向错误，禁止开仓", "rr": 0, "sl_pct": 0}
+        if (direction == "long" and tp <= entry) or (direction == "short" and tp >= entry):
+            return {"ok": False, "reason": "止盈方向错误，禁止小赚大亏结构", "rr": 0, "sl_pct": 0}
+
+        risk_dist = abs(entry - sl)
+        profit_dist = abs(tp - entry)
+        rr = profit_dist / risk_dist if risk_dist > 0 else 0
+        sl_pct = risk_dist / entry * 100
+        return {"ok": rr > 0, "reason": "", "rr": rr, "sl_pct": sl_pct}
+
+    def _adaptive_leverage(
+        self,
+        requested: int,
+        mode: str,
+        confidence: int,
+        rr: float,
+        tf_edge: float,
+        sl_pct: float,
+        risk_level: str,
+        chain_signal: str,
+    ) -> int:
+        """在 10x-25x 内自适应杠杆；风险金额仍由止损距离控制。"""
+        min_lev = int(self.safety.get("min_leverage", 10))
+        max_lev = int(self.safety.get("max_leverage", 25))
+        default_lev = int(self.HARD_RULES.get(mode, {}).get("leverage", min_lev))
+        lev = max(requested or default_lev, default_lev, min_lev)
+
+        if confidence >= 90 and rr >= 3.5 and tf_edge >= 0.18:
+            lev = max(lev, 22)
+        elif confidence >= 84 and rr >= 3.0 and tf_edge >= 0.12:
+            lev = max(lev, 18 if mode == "scalp" else 15)
+        elif confidence >= 80 and rr >= 2.8 and tf_edge >= 0.10:
+            lev = max(lev, 15 if mode == "scalp" else 12)
+        else:
+            lev = min(lev, 12)
+
+        if risk_level == "extreme" or chain_signal == "danger":
+            lev = min(lev, min_lev)
+        elif risk_level == "high":
+            lev = min(lev, 12)
+        if chain_signal in ("crowded_long", "crowded_short"):
+            lev = min(lev, 12)
+        if sl_pct > 2.5:
+            lev = min(lev, 12)
+        elif sl_pct > 1.5:
+            lev = min(lev, 15)
+
+        return max(min_lev, min(max_lev, int(lev)))
 
     # ================================================================
     # 引擎1: 4H宏观组合信号 — 隔夜期货+费率+时段
@@ -1323,8 +1382,8 @@ class AutoTrader:
 
         # ---- 深度 AI (完整分析) ----
         safety = (
-            f"=== 硬规则 ===\n0.⛔仅逐仓\n1.杠杆≤{self.safety['max_leverage']}x 风险≤{adjusted['risk_pct']}%\n"
-            f"2.止损必设|距爆仓≥0.5%\n3.盈亏比≥{adjusted['min_rr']}:1\n"
+            f"=== 硬规则 ===\n0.⛔仅逐仓\n1.杠杆{self.safety['min_leverage']}-{self.safety['max_leverage']}x 风险≤{adjusted['risk_pct']}%\n"
+            f"2.止损必设|距爆仓≥0.5%\n3.盈亏比≥{adjusted['min_rr']}:1，禁止小赚大亏\n"
             f"4.{'⚠️已持有,仅浮盈可加仓' if has_pos else '✅可开仓'}\n"
             f"5.时段:{session}{'(好时段)' if session in ('overlap','us') else '(平淡)'}\n"
             f"6.持仓分析: OI变化{chain['oi_change_pct']:.1f}% | 费率{chain['funding_rate']*100:.3f}% | {chain['explanation']}\n"
@@ -1492,21 +1551,18 @@ class AutoTrader:
         try:
             entry = float(decision["entry"]); sl = float(decision["stop_loss"])
             tp = float(decision["take_profit"])
-            lev = min(
-                int(decision.get("leverage", params["leverage"])),
-                adjusted["leverage"],
-                self.safety["max_leverage"],
-            )
             direction = action.lower()
         except Exception: return None
 
-        if (direction=="long" and sl>=entry) or (direction=="short" and sl<=entry): return None
+        geometry = self._trade_geometry(entry, sl, tp, direction)
+        if not geometry["ok"]:
+            return {"action":"WAIT","reason":geometry["reason"],"market":main,"mode":mode}
 
-        rr = abs(tp-entry)/abs(sl-entry) if abs(sl-entry)>0 else 0
+        rr = geometry["rr"]
         if rr < adjusted["min_rr"]:
-            return {"action":"WAIT","reason":f"盈亏比{rr:.1f}<{adjusted['min_rr']}","market":main,"mode":mode}
+            return {"action":"WAIT","reason":f"盈亏比{rr:.1f}<{adjusted['min_rr']}，禁止盈利小亏损大","market":main,"mode":mode}
 
-        sl_pct = abs(entry - sl) / entry * 100 if entry > 0 else 0
+        sl_pct = geometry["sl_pct"]
         if sl_pct > hard["max_stop_pct"]:
             return {"action":"WAIT","reason":f"止损距离{sl_pct:.2f}%>{hard['max_stop_pct']}%，亏损边界过大","market":main,"mode":mode}
         if sl_pct < hard["min_stop_pct"]:
@@ -1514,10 +1570,22 @@ class AutoTrader:
 
         direction_tf_score = tf_score_long if direction == "long" else tf_score_short
         opposite_tf_score = tf_score_short if direction == "long" else tf_score_long
+        tf_edge = direction_tf_score - opposite_tf_score
         if direction_tf_score < hard["min_tf_score"]:
             return {"action":"WAIT","reason":f"多周期评分{direction_tf_score:.2f}<{hard['min_tf_score']}","market":main,"mode":mode}
-        if direction_tf_score - opposite_tf_score < 0.08:
+        if tf_edge < 0.08:
             return {"action":"WAIT","reason":"多空评分差不足，优势不明显","market":main,"mode":mode}
+
+        lev = self._adaptive_leverage(
+            int(decision.get("leverage", adjusted["leverage"])),
+            mode,
+            conf,
+            rr,
+            tf_edge,
+            sl_pct,
+            decision.get("risk_level") or regime.get("risk_level", ""),
+            chain.get("signal", ""),
+        )
 
         safe, liq, buf = self.liq_safe(entry, sl, lev, direction)
         if not safe:
@@ -2405,7 +2473,7 @@ class AutoTrader:
         prompt = (f"今日{total}笔|胜率{wr:.0f}%|盈亏{sum(pnls):+.2f}U|"
                   f"超短线:杆{self.scalp['leverage']}x险{self.scalp['risk_pct']}%信{self.scalp['min_confidence']}|"
                   f"短线:杆{self.swing['leverage']}x险{self.swing['risk_pct']}%信{self.swing['min_confidence']}|"
-                  f"硬规则不可修改:杆≤{self.safety['max_leverage']}x险≤{self.safety['max_risk_pct']}%"
+                  f"硬规则不可修改:杆{self.safety['min_leverage']}-{self.safety['max_leverage']}x险≤{self.safety['max_risk_pct']}%"
                   f"|日亏≤{self.safety['max_daily_loss_pct']}%|连亏<{self.safety['max_consecutive_losses']}|"
                   f"PaulWei参考: {pw_summary}")
 
