@@ -42,6 +42,10 @@ ESTIMATED_SLIPPAGE_RATE = float(os.getenv("ESTIMATED_SLIPPAGE_RATE", "0.0002")) 
 MIN_NET_RR = float(os.getenv("MIN_NET_RR", "3.0"))                # 扣成本后最低盈亏比
 SYMBOL_COOLDOWN_MINUTES = int(os.getenv("SYMBOL_COOLDOWN_MINUTES", "120"))  # 单币亏损冷却
 SYMBOL_MAX_DAILY_LOSSES = int(os.getenv("SYMBOL_MAX_DAILY_LOSSES", "2"))    # 单币日内最大亏损次数
+MARKET_GRAPH_ENABLED = os.getenv("MARKET_GRAPH_ENABLED", "true").lower() == "true"  # 图谱共振闸门
+MARKET_GRAPH_MIN_EDGE = float(os.getenv("MARKET_GRAPH_MIN_EDGE", "60"))             # 最低方向优势
+MARKET_GRAPH_MAX_CONFLICT = float(os.getenv("MARKET_GRAPH_MAX_CONFLICT", "35"))     # 最大信号冲突
+MARKET_GRAPH_MIN_LIQUIDITY = float(os.getenv("MARKET_GRAPH_MIN_LIQUIDITY", "55"))   # 最低流动性评分
 
 # ============================================
 # Webhook 配置

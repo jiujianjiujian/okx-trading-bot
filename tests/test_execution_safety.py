@@ -9,6 +9,7 @@ from auto_trader import AutoTrader
 import main
 from backtest_engine import BacktestEngine
 from liquidation_tracker import LiquidationTracker
+from market_graph import MarketGraphScorer
 from okx_client import OKXClient
 from risk_manager import RiskManager
 from signal_parser import TradeSignal
@@ -27,6 +28,66 @@ class FakeNotifier:
 
 
 class ExecutionSafetyTests(unittest.TestCase):
+    def test_market_graph_allows_aligned_liquid_long_cluster(self):
+        market = {
+            tf: {
+                "price": 100,
+                "ema20": 105,
+                "ema50": 100,
+                "macd": {"is_bullish": True},
+                "supertrend": {"trend": "up"},
+                "adx": {"adx": 32},
+                "bb_lower": 90,
+                "bb_upper": 120,
+            }
+            for tf in ("1H", "4H", "1D")
+        }
+        graph = MarketGraphScorer().score(
+            "BTC-USDT-SWAP",
+            "long",
+            market,
+            {"signal": "neutral", "funding_rate": 0, "oi_change_pct": 0},
+            {"trend": "bullish"},
+            "清算压力: bullish",
+            {"spread": 0.01, "depth_1pct": 120000, "imbalance": 0.7, "buy_sell_ratio": 0.68, "cvd": 1000},
+            {"trend_strength": "强多头", "range_bound": False},
+        )
+
+        self.assertTrue(graph["trade_allowed"])
+        self.assertEqual(graph["cluster"], "BULL")
+        self.assertGreaterEqual(graph["edge_score"], 60)
+        self.assertLessEqual(graph["conflict_score"], 35)
+
+    def test_market_graph_blocks_conflict_and_bad_liquidity(self):
+        market = {
+            tf: {
+                "price": 100,
+                "ema20": 105,
+                "ema50": 100,
+                "macd": {"is_bullish": True},
+                "supertrend": {"trend": "up"},
+                "adx": {"adx": 32},
+                "bb_lower": 90,
+                "bb_upper": 120,
+            }
+            for tf in ("1H", "4H", "1D")
+        }
+        graph = MarketGraphScorer().score(
+            "BTC-USDT-SWAP",
+            "short",
+            market,
+            {"signal": "danger", "funding_rate": 0.004, "oi_change_pct": 18},
+            {"trend": "bullish"},
+            "清算压力: bullish",
+            {"spread": 0.25, "depth_1pct": 1000, "imbalance": 0.72, "buy_sell_ratio": 0.7, "cvd": 1500,
+             "liquidity_gap": True},
+            {"trend_strength": "强多头", "range_bound": True},
+        )
+
+        self.assertFalse(graph["trade_allowed"])
+        self.assertGreater(graph["conflict_score"], 35)
+        self.assertIn("图谱方向与交易方向不一致", graph["blockers"])
+
     def test_risk_manager_uses_contract_metadata(self):
         risk = RiskManager()
         qty, notional = risk.calculate_position_size(

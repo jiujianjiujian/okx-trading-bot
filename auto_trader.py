@@ -28,6 +28,8 @@ from config import (
     MIN_LEVERAGE, MAX_LEVERAGE,
     ESTIMATED_FEE_RATE, ESTIMATED_SLIPPAGE_RATE, MIN_NET_RR,
     SYMBOL_COOLDOWN_MINUTES, SYMBOL_MAX_DAILY_LOSSES,
+    MARKET_GRAPH_ENABLED, MARKET_GRAPH_MIN_EDGE,
+    MARKET_GRAPH_MAX_CONFLICT, MARKET_GRAPH_MIN_LIQUIDITY,
 )
 from risk_manager import RiskManager
 from okx_client import OKXClient
@@ -37,6 +39,7 @@ from liquidation_tracker import LiquidationTracker
 from factor_miner import FactorMiner
 from paul_wei_analyzer import get_paul_wei
 from bayesian_tracker import BayesianTracker
+from market_graph import MarketGraphScorer
 
 
 TOP_COINS = [
@@ -115,6 +118,11 @@ class AutoTrader:
         self.logger = TradeLogger()
         self.liq_tracker = LiquidationTracker()
         self.bayesian = BayesianTracker()
+        self.market_graph = MarketGraphScorer(
+            min_edge=MARKET_GRAPH_MIN_EDGE,
+            max_conflict=MARKET_GRAPH_MAX_CONFLICT,
+            min_liquidity=MARKET_GRAPH_MIN_LIQUIDITY,
+        )
         self._running = False
         self._factor_miner = None  # 延迟初始化，避免 API key 检查
 
@@ -382,6 +390,43 @@ class AutoTrader:
                     "adx":self._adx([x["high"] for x in k],[x["low"] for x in k],c,14),
                 }
         return data
+
+    def _market_graph_score(
+        self,
+        symbol: str,
+        direction: str,
+        market: dict,
+        chain: dict,
+        smc: dict,
+        liq_text: str,
+        microstructure: dict,
+        structure: dict,
+    ) -> dict:
+        scorer = getattr(self, "market_graph", None)
+        if scorer is None:
+            scorer = MarketGraphScorer(
+                min_edge=MARKET_GRAPH_MIN_EDGE,
+                max_conflict=MARKET_GRAPH_MAX_CONFLICT,
+                min_liquidity=MARKET_GRAPH_MIN_LIQUIDITY,
+            )
+            self.market_graph = scorer
+        return scorer.score(symbol, direction, market, chain, smc, liq_text, microstructure, structure)
+
+    @staticmethod
+    def _market_graph_text(graph: dict) -> str:
+        if not graph:
+            return "图谱数据缺失"
+        blockers = "、".join(graph.get("blockers", [])[:3]) or "无"
+        support = "、".join(graph.get("support", [])[:3]) or "无"
+        conflicts = "、".join(graph.get("conflicts", [])[:3]) or "无"
+        return (
+            f"{graph.get('cluster', 'NEUTRAL')} | 优势{graph.get('edge_score', 0):.0f}/100 "
+            f"| 预期优势{graph.get('expected_edge', 0):.0f}/100 "
+            f"| 冲突{graph.get('conflict_score', 0):.0f}/100 "
+            f"| 流动性{graph.get('liquidity_score', 0):.0f}/100 "
+            f"| 节点{graph.get('node_count', 0)}/边{graph.get('edge_count', 0)}\n"
+            f"支持: {support}\n冲突: {conflicts}\n阻断: {blockers}"
+        )
 
     # ================================================================
     # 链上数据
@@ -1482,6 +1527,13 @@ class AutoTrader:
         liq_summary = self.liq_tracker.summary(symbol, current)
         liq_ctx = f"=== 清算数据 ===\n{liq_summary}" if liq_summary else ""
 
+        # 市场图谱: 多周期、盘口、SMC、清算、OI/费率的确定性共振评分
+        ms = self._microstructure(symbol)
+        graph_hint = self._market_graph_score(
+            symbol, quick_dir.lower(), market, chain, smc, liq_summary, ms, structure,
+        )
+        graph_ctx = f"=== 市场图谱共振 ===\n{self._market_graph_text(graph_hint)}\n"
+
         # 因子挖掘信号（轻量增强）
         factor_ctx = ""
         if self._factor_miner is None and DEEPSEEK_API_KEY:
@@ -1563,11 +1615,11 @@ class AutoTrader:
         paul_ctx = self.paul_wei.get_context_for_ai()
 
         deep_prompt = (f"=== {mode} [{symbol}] ===\n"+"\n".join(tf_text)+"\n\n"
-                       f"=== SMC结构 ===\n{smc_text}\n\n"
-                       f"=== 市场结构 ===\n{structure_text}\n\n"
-                       f"K线形态: {pattern_text}\n"
-                       f"多TF融合: 多头={tf_score_long:.2f} 空头={tf_score_short:.2f}\n\n"
-                       +market_ctx+"\n"+liq_ctx+"\n"+factor_ctx+"\n"+paul_ctx+"\n\n"+safety+"\n分析并输出JSON。")
+                        f"=== SMC结构 ===\n{smc_text}\n\n"
+                        f"=== 市场结构 ===\n{structure_text}\n\n"
+                        f"K线形态: {pattern_text}\n"
+                        f"多TF融合: 多头={tf_score_long:.2f} 空头={tf_score_short:.2f}\n\n"
+                       +market_ctx+"\n"+liq_ctx+"\n"+graph_ctx+"\n"+factor_ctx+"\n"+paul_ctx+"\n\n"+safety+"\n分析并输出JSON。")
 
         deep_resp = self._call_ds(deep_sys, deep_prompt, 1536)
         if not deep_resp: return None
@@ -1646,6 +1698,18 @@ class AutoTrader:
         if tf_edge < 0.08:
             return {"action":"WAIT","reason":"多空评分差不足，优势不明显","market":main,"mode":mode}
 
+        graph = graph_hint if graph_hint.get("direction") == direction else self._market_graph_score(
+            symbol, direction, market, chain, smc, liq_summary, ms, structure,
+        )
+        if MARKET_GRAPH_ENABLED and not graph["trade_allowed"]:
+            blockers = " | ".join(graph.get("blockers", [])[:4])
+            return {"action":"WAIT","reason":f"市场图谱未通过: {blockers}","market":main,"mode":mode,
+                    "market_graph":graph}
+        if graph.get("expected_edge", 0) >= 75:
+            conf = min(100, conf + 3)
+        elif graph.get("expected_edge", 0) < 60:
+            conf = max(10, conf - 5)
+
         lev = self._adaptive_leverage(
             int(decision.get("leverage", adjusted["leverage"])),
             mode,
@@ -1698,7 +1762,7 @@ class AutoTrader:
                 "liquidation":round(liq,1),
                 "liq_buffer":round(buf,1),"risk_pct":adjusted["risk_pct"],
                 "reason":decision.get("reason",""),"market":main,"regime":regime,
-                "paul_wei_score": pw_score}
+                "paul_wei_score": pw_score, "market_graph": graph}
 
     # ================================================================
     # 执行
@@ -1729,6 +1793,11 @@ class AutoTrader:
         rr_floor = max(MIN_NET_RR, self.HARD_RULES.get(mode, {}).get("min_rr", MIN_NET_RR))
         if geometry["net_rr"] < rr_floor:
             return False, f"净盈亏比{geometry['net_rr']:.1f}<{rr_floor}，扣成本后不交易"
+
+        graph = d.get("market_graph") or {}
+        if MARKET_GRAPH_ENABLED and graph and not graph.get("trade_allowed", True):
+            blockers = " | ".join(graph.get("blockers", [])[:4])
+            return False, f"市场图谱未通过: {blockers}"
 
         loss_stats = self.logger.get_symbol_loss_stats(d["symbol"], hours=24)
         mins = loss_stats.get("minutes_since_loss")
@@ -2396,6 +2465,15 @@ class AutoTrader:
             mode_cn = "超短线" if d["mode"]=="scalp" else "短线"
             # 关键分析摘要
             regime_info = d.get("regime", {})
+            graph_info = d.get("market_graph", {})
+            graph_line = ""
+            if graph_info:
+                graph_line = (
+                    f"\n🕸 图谱: {graph_info.get('cluster','NEUTRAL')} | "
+                    f"优势{graph_info.get('edge_score',0):.0f} | "
+                    f"冲突{graph_info.get('conflict_score',0):.0f} | "
+                    f"流动性{graph_info.get('liquidity_score',0):.0f}"
+                )
             analysis_summary = (
                 f"📊 *{mode_cn} {d['symbol']} {dc}* | 置信{d['confidence']}/100\n\n"
                 f"💰 入场: ${d['entry']:,.4f} | {qty}张 | {d['leverage']}x杠杆\n"
@@ -2404,7 +2482,7 @@ class AutoTrader:
                 f"🧠 *分析:* {d.get('reason','')}\n\n"
                 f"🏷 市场状态: {regime_info.get('market_regime','')} | "
                 f"风险: {regime_info.get('risk_level','')}\n"
-                f"📍 偏置: {regime_info.get('direction_bias','')}"
+                f"📍 偏置: {regime_info.get('direction_bias','')}{graph_line}"
             )
             send(f"{em} {analysis_summary}")
             # 追踪限价单
@@ -3014,6 +3092,10 @@ class AutoTrader:
 
         # 方向评分
         decision = self._calc_direction_score(market, chain, smc, liq, structure)
+        graph_direction = decision["direction"].lower()
+        if graph_direction == "wait":
+            graph_direction = "long" if decision.get("long_score", 0) >= decision.get("short_score", 0) else "short"
+        graph = self._market_graph_score(symbol, graph_direction, market, chain, smc, liq, ms, structure)
 
         # 入场/止损/止盈只在可执行方向下生成，避免 WAIT 被误当成 SHORT。
         atr_1h = market.get("1H", {}).get("atr", 0)
@@ -3077,6 +3159,8 @@ class AutoTrader:
             hard_blockers.append(f"1%深度不足({depth_1pct:.0f}<{min_depth:.0f})")
         if ms.get("liquidity_gap"):
             hard_blockers.append("流动性断层")
+        if MARKET_GRAPH_ENABLED and decision["direction"] != "WAIT" and not graph.get("trade_allowed", True):
+            hard_blockers.extend(graph.get("blockers", [])[:4])
 
         actionable = (
             trade_plan is not None
@@ -3085,6 +3169,7 @@ class AutoTrader:
             and ms.get("spread", 0) <= max_spread
             and depth_1pct >= min_depth
             and not ms.get("liquidity_gap")
+            and (not MARKET_GRAPH_ENABLED or graph.get("trade_allowed", False))
         )
         if ms.get("liquidity_gap"):
             liquidity_tag = "流动性断层⚠️"
@@ -3112,6 +3197,8 @@ class AutoTrader:
             f"*SMC结构:* {smc.get('summary', '未知')}",
             f"*订单流:* 价差{ms.get('spread',0):.3f}% | 买卖比{ms.get('buy_sell_ratio',0.5):.2f} | "
             f"1%深度{depth_1pct:,.0f}张 | {liquidity_tag}",
+            f"*图谱共振:* {graph.get('cluster', 'NEUTRAL')} | 优势{graph.get('edge_score', 0):.0f}/100 | "
+            f"冲突{graph.get('conflict_score', 0):.0f}/100 | 流动性{graph.get('liquidity_score', 0):.0f}/100",
             f"*链上数据:* 费率{chain['funding_rate']*100:.3f}% | OI {chain.get('oi_val', 0):,.0f}张 | 拥挤度: {chain.get('crowd_signal', '中性')}",
             f"  {chain.get('explanation', '')}",
             f"*清算:* {liq}",
