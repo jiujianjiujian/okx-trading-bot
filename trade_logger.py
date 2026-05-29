@@ -248,6 +248,20 @@ class TradeLogger:
         )
         return cursor.fetchall()
 
+    def get_ai_order_decision(self, order_id: str) -> dict:
+        """读取 AI 订单原始决策。"""
+        cursor = self.conn.execute(
+            "SELECT raw_data FROM ai_orders WHERE order_id=?",
+            (order_id,),
+        )
+        row = cursor.fetchone()
+        if not row or not row[0]:
+            return {}
+        try:
+            return json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
     def get_symbol_loss_stats(self, symbol: str, hours: int = 24) -> dict:
         """统计单币近期亏损，用于冷却保护。"""
         cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()

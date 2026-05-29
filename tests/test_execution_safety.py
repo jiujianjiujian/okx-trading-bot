@@ -628,6 +628,7 @@ class ExecutionSafetyTests(unittest.TestCase):
                 "stop_loss": 95,
                 "take_profit": 115,
             }, 2, "order-2")
+            self.assertEqual(logger.get_ai_order_decision("order-2")["symbol"], "BTC-USDT-SWAP")
             active = logger.get_active_ai_orders()
             self.assertEqual(active[0][0], "order-2")
             logger.update_ai_order("order-2", "canceled")
@@ -762,6 +763,64 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(trades[0][3], "BTC-USDT-SWAP")
         self.assertEqual(trades[0][5], 101)
         self.assertIn("已成交", messages[0])
+
+    def test_closed_trade_sync_updates_bayesian_learning(self):
+        class FakeOKX:
+            def get_positions(self):
+                return []
+
+            def get_market_price(self, symbol):
+                return 110
+
+            def get_instrument_info(self, symbol):
+                return {"ctVal": 1}
+
+        class FakeLogger:
+            def __init__(self):
+                self.closed = []
+
+            def get_open_trades(self):
+                return [[
+                    42, None, "2026-05-29T00:00:00", "BTC-USDT-SWAP", "long",
+                    100, 2, 10, 95, 115, "order-1", "open", None, None, None,
+                ]]
+
+            def close_trade(self, trade_id, exit_price, pnl):
+                self.closed.append((trade_id, exit_price, pnl))
+
+            def get_ai_order_decision(self, order_id):
+                return {
+                    "action": "LONG",
+                    "mode": "scalp",
+                    "confidence": 90,
+                    "net_risk_reward": 3.2,
+                    "regime": {"market_regime": "trend_up", "risk_level": "low"},
+                    "market_graph": {"cluster": "BULL", "edge_score": 80},
+                }
+
+        class FakeBayes:
+            def __init__(self):
+                self.calls = []
+
+            def update(self, conditions, won):
+                self.calls.append((conditions, won))
+
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.okx = FakeOKX()
+        trader.logger = FakeLogger()
+        trader.bayesian = FakeBayes()
+        trader._exchange_health = lambda: {"error": False}
+        trader._current_session = lambda: "us"
+        messages = []
+
+        trader._sync_closed_trades(messages.append)
+
+        self.assertEqual(trader.logger.closed[0][0], 42)
+        self.assertGreater(trader.logger.closed[0][2], 0)
+        self.assertTrue(trader.bayesian.calls[0][1])
+        self.assertEqual(trader.bayesian.calls[0][0]["direction"], "LONG")
+        self.assertEqual(trader.bayesian.calls[0][0]["graph_cluster"], "BULL")
+        self.assertIn("已同步平仓学习", messages[0])
 
 
 if __name__ == "__main__":

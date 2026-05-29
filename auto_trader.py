@@ -18,7 +18,7 @@ import json
 import contextlib
 import time
 import threading
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import ClassVar, Optional
 import http_wrapper as requests
 
@@ -54,6 +54,12 @@ TOP_COINS = [
 EXCLUDED_DYNAMIC_BASES = {"XAU", "XAG"}
 TRADE_STATUS_IDX = 11
 TRADE_PNL_IDX = 13
+TRADE_ID_IDX = 0
+TRADE_SYMBOL_IDX = 3
+TRADE_DIRECTION_IDX = 4
+TRADE_ENTRY_IDX = 5
+TRADE_QTY_IDX = 6
+TRADE_ORDER_ID_IDX = 10
 
 
 def _fallback_candidates() -> list:
@@ -1083,7 +1089,7 @@ class AutoTrader:
 
     def _current_session(self) -> str:
         """判断当前时段"""
-        beijing_hour = (datetime.utcnow().hour + 8) % 24
+        beijing_hour = (datetime.now(timezone.utc).hour + 8) % 24
         if SESSIONS["overlap"][0] <= beijing_hour < SESSIONS["overlap"][1]:
             return "overlap"
         elif SESSIONS["us"][0] <= beijing_hour < SESSIONS["us"][1]:
@@ -1279,6 +1285,84 @@ class AutoTrader:
             "margin_required": margin_required,
         }
 
+    @staticmethod
+    def _bucket(value: float, cuts: list[float], labels: list[str]) -> str:
+        for cut, label in zip(cuts, labels, strict=False):
+            if value < cut:
+                return label
+        return labels[-1]
+
+    def _bayesian_conditions_from_trade(self, trade: tuple, decision: dict | None = None) -> dict:
+        decision = decision or {}
+        direction = (decision.get("action") or trade[TRADE_DIRECTION_IDX] or "").upper()
+        if direction not in ("LONG", "SHORT"):
+            direction = "LONG" if str(trade[TRADE_DIRECTION_IDX]).lower() == "long" else "SHORT"
+
+        graph = decision.get("market_graph") or {}
+        regime = decision.get("regime") or {}
+        rr = float(decision.get("net_risk_reward") or decision.get("risk_reward") or 0)
+        graph_edge = float(graph.get("edge_score", 0) or 0)
+        confidence = float(decision.get("confidence", 0) or 0)
+
+        return {
+            "direction": direction,
+            "symbol": str(trade[TRADE_SYMBOL_IDX]),
+            "base": str(trade[TRADE_SYMBOL_IDX]).replace("-USDT-SWAP", ""),
+            "mode": str(decision.get("mode") or "unknown"),
+            "session": self._current_session(),
+            "regime": str(regime.get("market_regime") or "unknown"),
+            "risk_level": str(regime.get("risk_level") or "unknown"),
+            "graph_cluster": str(graph.get("cluster") or "unknown"),
+            "graph_edge": self._bucket(graph_edge, [60, 75, 90], ["low", "ok", "strong", "extreme"]),
+            "rr": self._bucket(rr, [3.0, 3.5, 4.5], ["low", "ok", "good", "great"]),
+            "confidence": self._bucket(confidence, [78, 85, 92], ["low", "ok", "high", "extreme"]),
+        }
+
+    def _record_trade_learning(self, trade: tuple, pnl: float, decision: dict | None = None):
+        try:
+            conditions = self._bayesian_conditions_from_trade(trade, decision)
+            self.bayesian.update(conditions, pnl > 0)
+        except Exception as exc:
+            print(f"[贝叶斯] 学习更新失败: {exc}")
+
+    def _sync_closed_trades(self, send):
+        """Reconcile local open trades when OKX position has disappeared."""
+        try:
+            open_trades = self.logger.get_open_trades()
+            if not open_trades:
+                return
+            positions = self.okx.get_positions()
+            active = {(p.get("instId"), p.get("side")) for p in positions}
+            if not active and self._exchange_health().get("error"):
+                return
+
+            for trade in open_trades:
+                symbol = trade[TRADE_SYMBOL_IDX]
+                direction = trade[TRADE_DIRECTION_IDX]
+                if (symbol, direction) in active:
+                    continue
+
+                exit_price = self.okx.get_market_price(symbol)
+                if exit_price <= 0:
+                    continue
+                entry = float(trade[TRADE_ENTRY_IDX] or 0)
+                qty = float(trade[TRADE_QTY_IDX] or 0)
+                if entry <= 0 or qty <= 0:
+                    continue
+                ct_val = float(self.okx.get_instrument_info(symbol).get("ctVal") or 0.001)
+                gross = (exit_price - entry) * qty * ct_val
+                if str(direction).lower() == "short":
+                    gross = (entry - exit_price) * qty * ct_val
+                costs = (entry + exit_price) * qty * ct_val * (ESTIMATED_FEE_RATE + ESTIMATED_SLIPPAGE_RATE)
+                pnl = gross - costs
+
+                self.logger.close_trade(trade[TRADE_ID_IDX], exit_price, pnl)
+                decision = self.logger.get_ai_order_decision(trade[TRADE_ORDER_ID_IDX])
+                self._record_trade_learning(trade, pnl, decision)
+                send(f"📘 已同步平仓学习: {symbol} {direction.upper()} | 估算PNL {pnl:+.2f}U")
+        except Exception as exc:
+            print(f"[平仓同步] {exc}")
+
     def _adaptive_leverage(
         self,
         requested: int,
@@ -1330,7 +1414,7 @@ class AutoTrader:
         chain = self._onchain(symbol)
         rate = chain["funding_rate"]
         session = self._current_session()
-        bj_hour = (datetime.utcnow().hour + 8) % 24
+        bj_hour = (datetime.now(timezone.utc).hour + 8) % 24
 
         # 条件1: 8-12 AM 北京时段
         is_morning = 8 <= bj_hour < 12
@@ -3036,6 +3120,7 @@ class AutoTrader:
                     last_trail = now_ts
                     self._check_trailing(send)
                     self._check_pending_orders(send)
+                    self._sync_closed_trades(send)
 
                 # 连亏追踪
                 self._update_loss_streak(send)
