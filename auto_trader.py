@@ -55,6 +55,7 @@ EXCLUDED_DYNAMIC_BASES = {"XAU", "XAG"}
 TRADE_STATUS_IDX = 11
 TRADE_PNL_IDX = 13
 TRADE_ID_IDX = 0
+TRADE_TIME_IDX = 2
 TRADE_SYMBOL_IDX = 3
 TRADE_DIRECTION_IDX = 4
 TRADE_ENTRY_IDX = 5
@@ -1325,6 +1326,131 @@ class AutoTrader:
         except Exception as exc:
             print(f"[贝叶斯] 学习更新失败: {exc}")
 
+    @staticmethod
+    def _fill_num(fill: dict, key: str, default: float = 0.0) -> float:
+        try:
+            value = fill.get(key)
+            return float(value) if value not in ("", None) else default
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _fill_time_ms(fill: dict) -> int:
+        for key in ("fillTime", "ts"):
+            try:
+                value = fill.get(key)
+                if value not in ("", None):
+                    return int(float(value))
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    @staticmethod
+    def _trade_time_ms(trade: tuple) -> int:
+        try:
+            dt = datetime.fromisoformat(str(trade[TRADE_TIME_IDX]))
+            return int(dt.timestamp() * 1000)
+        except (TypeError, ValueError, OSError):
+            return 0
+
+    def _estimate_closed_trade_pnl(self, trade: tuple, exit_price: float, ct_val: float) -> dict:
+        entry = float(trade[TRADE_ENTRY_IDX] or 0)
+        qty = float(trade[TRADE_QTY_IDX] or 0)
+        direction = str(trade[TRADE_DIRECTION_IDX]).lower()
+        gross = (exit_price - entry) * qty * ct_val
+        if direction == "short":
+            gross = (entry - exit_price) * qty * ct_val
+        costs = (entry + exit_price) * qty * ct_val * (ESTIMATED_FEE_RATE + ESTIMATED_SLIPPAGE_RATE)
+        return {
+            "ok": entry > 0 and qty > 0 and exit_price > 0,
+            "exit_price": exit_price,
+            "pnl": gross - costs,
+            "fee": -costs,
+            "qty": qty,
+            "source": "estimate",
+        }
+
+    def _closed_trade_pnl_from_fills(self, trade: tuple, ct_val: float) -> dict:
+        symbol = trade[TRADE_SYMBOL_IDX]
+        order_id = trade[TRADE_ORDER_ID_IDX]
+        direction = str(trade[TRADE_DIRECTION_IDX]).lower()
+        entry = float(trade[TRADE_ENTRY_IDX] or 0)
+        qty = float(trade[TRADE_QTY_IDX] or 0)
+        if entry <= 0 or qty <= 0:
+            return {"ok": False, "reason": "trade entry/qty invalid"}
+
+        close_side = "sell" if direction == "long" else "buy"
+        open_ts = self._trade_time_ms(trade)
+        try:
+            entry_fills = self.okx.get_order_fills(symbol, order_id) if order_id else []
+            recent_fills = self.okx.get_fills(symbol=symbol, inst_type="SWAP", history=False, limit=100)
+            history_fills = [] if recent_fills else self.okx.get_fills(symbol=symbol, inst_type="SWAP", history=True, limit=100)
+        except Exception as exc:
+            return {"ok": False, "reason": f"fills unavailable: {exc}"}
+
+        all_exit_fills = recent_fills or history_fills
+        seen = set()
+        exit_fills = []
+        for fill in sorted(all_exit_fills, key=self._fill_time_ms):
+            fill_id = (fill.get("tradeId"), fill.get("ordId"), fill.get("fillTime"))
+            if fill_id in seen:
+                continue
+            seen.add(fill_id)
+            if fill.get("instId") != symbol:
+                continue
+            if str(fill.get("side", "")).lower() != close_side:
+                continue
+            if open_ts and self._fill_time_ms(fill) and self._fill_time_ms(fill) < open_ts - 5000:
+                continue
+            exit_fills.append(fill)
+
+        remaining = qty
+        close_qty = 0.0
+        weighted_exit = 0.0
+        fee_total = 0.0
+        fee_seen = False
+        for fill in exit_fills:
+            if remaining <= 0:
+                break
+            sz = self._fill_num(fill, "fillSz")
+            px = self._fill_num(fill, "fillPx")
+            if sz <= 0 or px <= 0:
+                continue
+            used = min(sz, remaining)
+            ratio = used / sz if sz > 0 else 1.0
+            weighted_exit += px * used
+            close_qty += used
+            remaining -= used
+            fee = self._fill_num(fill, "fee")
+            if fee:
+                fee_total += fee * ratio
+                fee_seen = True
+
+        if close_qty <= 0 or close_qty < qty * 0.5:
+            return {"ok": False, "reason": "no matching close fills"}
+
+        for fill in entry_fills:
+            sz = self._fill_num(fill, "fillSz")
+            fee = self._fill_num(fill, "fee")
+            if sz > 0 and fee:
+                fee_total += fee * min(1.0, close_qty / sz)
+                fee_seen = True
+
+        exit_price = weighted_exit / close_qty
+        gross = (exit_price - entry) * close_qty * ct_val
+        if direction == "short":
+            gross = (entry - exit_price) * close_qty * ct_val
+        if not fee_seen:
+            fee_total = -(entry + exit_price) * close_qty * ct_val * ESTIMATED_FEE_RATE
+        return {
+            "ok": True,
+            "exit_price": exit_price,
+            "pnl": gross + fee_total,
+            "fee": fee_total,
+            "qty": close_qty,
+            "source": "okx_fills" if fee_seen else "okx_fills_estimated_fee",
+        }
+
     def _sync_closed_trades(self, send):
         """Reconcile local open trades when OKX position has disappeared."""
         try:
@@ -1350,16 +1476,19 @@ class AutoTrader:
                 if entry <= 0 or qty <= 0:
                     continue
                 ct_val = float(self.okx.get_instrument_info(symbol).get("ctVal") or 0.001)
-                gross = (exit_price - entry) * qty * ct_val
-                if str(direction).lower() == "short":
-                    gross = (entry - exit_price) * qty * ct_val
-                costs = (entry + exit_price) * qty * ct_val * (ESTIMATED_FEE_RATE + ESTIMATED_SLIPPAGE_RATE)
-                pnl = gross - costs
+                pnl_result = self._closed_trade_pnl_from_fills(trade, ct_val)
+                if not pnl_result.get("ok"):
+                    pnl_result = self._estimate_closed_trade_pnl(trade, exit_price, ct_val)
+                if not pnl_result.get("ok"):
+                    continue
+                exit_price = float(pnl_result["exit_price"])
+                pnl = float(pnl_result["pnl"])
 
                 self.logger.close_trade(trade[TRADE_ID_IDX], exit_price, pnl)
                 decision = self.logger.get_ai_order_decision(trade[TRADE_ORDER_ID_IDX])
                 self._record_trade_learning(trade, pnl, decision)
-                send(f"📘 已同步平仓学习: {symbol} {direction.upper()} | 估算PNL {pnl:+.2f}U")
+                source = pnl_result.get("source", "estimate")
+                send(f"📘 已同步平仓学习: {symbol} {direction.upper()} | {source} PNL {pnl:+.2f}U")
         except Exception as exc:
             print(f"[平仓同步] {exc}")
 

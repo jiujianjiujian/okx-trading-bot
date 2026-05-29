@@ -7,6 +7,7 @@ import json
 import time
 import hmac
 import base64
+from urllib.parse import urlencode
 import httpx
 from config import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE, OKX_DEMO, OKX_BASE_URL, PROXY_URL
 
@@ -254,6 +255,33 @@ class OKXClient:
         if self._ok(result) and result.get("data"):
             return result["data"][0]
         return {}
+
+    def get_fills(
+        self,
+        symbol: str = "",
+        order_id: str = "",
+        inst_type: str = "SWAP",
+        history: bool = False,
+        limit: int = 100,
+    ) -> list:
+        """查询成交明细。最近成交用 fills，历史成交用 fills-history。"""
+        params = {"instType": inst_type, "limit": str(max(1, min(int(limit), 100)))}
+        if symbol:
+            params["instId"] = symbol
+        if order_id:
+            params["ordId"] = order_id
+        path = "/api/v5/trade/fills-history" if history else "/api/v5/trade/fills"
+        result = self._get(f"{path}?{urlencode(params)}")
+        if self._ok(result):
+            return result.get("data", [])
+        return []
+
+    def get_order_fills(self, symbol: str, order_id: str, inst_type: str = "SWAP") -> list:
+        """优先查最近3天成交，缺失时回退到3个月历史成交。"""
+        fills = self.get_fills(symbol=symbol, order_id=order_id, inst_type=inst_type, history=False)
+        if fills:
+            return fills
+        return self.get_fills(symbol=symbol, order_id=order_id, inst_type=inst_type, history=True)
 
     def close_position(self, symbol: str) -> tuple[bool, str]:
         """市价全平指定仓位"""

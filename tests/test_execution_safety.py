@@ -153,6 +153,18 @@ class ExecutionSafetyTests(unittest.TestCase):
             "ordId": "abc",
         }))
 
+        get_paths = []
+
+        def fake_get(path):
+            get_paths.append(path)
+            return {"code": "0", "data": [{"ordId": "abc", "fillSz": "1"}]}
+
+        client._get = fake_get
+        fills = client.get_order_fills("BTC-USDT-SWAP", "abc")
+        self.assertEqual(fills[0]["ordId"], "abc")
+        self.assertIn("/api/v5/trade/fills?", get_paths[-1])
+        self.assertIn("ordId=abc", get_paths[-1])
+
     def test_webhook_trade_path_places_market_order(self):
         class FakeOKX:
             def __init__(self):
@@ -821,6 +833,46 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(trader.bayesian.calls[0][0]["direction"], "LONG")
         self.assertEqual(trader.bayesian.calls[0][0]["graph_cluster"], "BULL")
         self.assertIn("已同步平仓学习", messages[0])
+
+    def test_closed_trade_pnl_prefers_okx_fills(self):
+        class FakeOKX:
+            def get_order_fills(self, symbol, order_id):
+                return [{
+                    "instId": symbol,
+                    "ordId": order_id,
+                    "side": "buy",
+                    "fillSz": "2",
+                    "fillPx": "100",
+                    "fee": "-0.1",
+                    "fillTime": "9999999999000",
+                    "tradeId": "entry",
+                }]
+
+            def get_fills(self, **kwargs):
+                return [{
+                    "instId": kwargs["symbol"],
+                    "ordId": "exit-1",
+                    "side": "sell",
+                    "fillSz": "2",
+                    "fillPx": "110",
+                    "fee": "-0.1",
+                    "fillTime": "9999999999999",
+                    "tradeId": "exit",
+                }]
+
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.okx = FakeOKX()
+        trade = [
+            42, None, "2026-05-29T00:00:00", "BTC-USDT-SWAP", "long",
+            100, 2, 10, 95, 115, "entry-1", "open", None, None, None,
+        ]
+
+        result = trader._closed_trade_pnl_from_fills(trade, ct_val=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "okx_fills")
+        self.assertEqual(result["exit_price"], 110)
+        self.assertAlmostEqual(result["pnl"], 19.8)
 
 
 if __name__ == "__main__":
