@@ -21,6 +21,7 @@ class OKXClient:
         self.demo = OKX_DEMO
         self.base_url = OKX_BASE_URL
         self._http = httpx.Client(proxy=PROXY_URL, timeout=15) if PROXY_URL else httpx.Client(timeout=15)
+        self._pos_mode = None
 
     # ----------------------------------------------------------------
     # HTTP 请求
@@ -89,7 +90,26 @@ class OKXClient:
 
     @staticmethod
     def _error_msg(result: dict) -> str:
-        return result.get("msg", f"错误码: {result.get('code')}")
+        base = result.get("msg") or f"错误码: {result.get('code')}"
+        details = []
+        for item in result.get("data", []) or []:
+            s_msg = item.get("sMsg")
+            s_code = item.get("sCode")
+            if s_msg:
+                details.append(f"{s_code}: {s_msg}" if s_code else s_msg)
+        return f"{base} | {'; '.join(details)}" if details else base
+
+    def _get_pos_mode(self) -> str:
+        """返回 OKX 持仓模式: net_mode 或 long_short_mode。"""
+        if getattr(self, "_pos_mode", None):
+            return self._pos_mode
+        try:
+            result = self._get("/api/v5/account/config")
+            if self._ok(result) and result.get("data"):
+                self._pos_mode = result["data"][0].get("posMode", "")
+        except Exception:
+            self._pos_mode = ""
+        return self._pos_mode or ""
 
     # ----------------------------------------------------------------
     # 账户相关
@@ -191,6 +211,8 @@ class OKXClient:
             "ordType": ord_type,
             "sz": str(quantity),
         }
+        if self._get_pos_mode() == "long_short_mode":
+            order_data["posSide"] = direction
 
         if ord_type == "limit":
             if limit_price <= 0:
@@ -225,6 +247,13 @@ class OKXClient:
         if not self._ok(result):
             return False, self._error_msg(result)
         return True, "撤单成功"
+
+    def get_order(self, symbol: str, order_id: str) -> dict:
+        """查询普通委托状态。"""
+        result = self._get(f"/api/v5/trade/order?instId={symbol}&ordId={order_id}")
+        if self._ok(result) and result.get("data"):
+            return result["data"][0]
+        return {}
 
     def close_position(self, symbol: str) -> tuple[bool, str]:
         """市价全平指定仓位"""

@@ -70,6 +70,21 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertEqual(calls[-1][1]["ordType"], "market")
         self.assertIn("attachAlgoOrds", calls[-1][1])
 
+        client._pos_mode = "long_short_mode"
+        ok, msg, oid = client.place_order("BTC-USDT-SWAP", "long", 1, ord_type="market")
+        self.assertTrue(ok)
+        self.assertEqual(calls[-1][1]["posSide"], "long")
+
+        client._post = lambda path, data: {
+            "code": "1",
+            "msg": "All operations failed",
+            "data": [{"sCode": "51000", "sMsg": "Parameter posSide error"}],
+        }
+        ok, msg, oid = client.place_order("BTC-USDT-SWAP", "long", 1, ord_type="market")
+        self.assertFalse(ok)
+        self.assertIn("Parameter posSide error", msg)
+
+        client._post = fake_post
         ok, msg = client.cancel_order("BTC-USDT-SWAP", "abc")
         self.assertTrue(ok)
         self.assertEqual(calls[-1], ("/api/v5/trade/cancel-order", {
@@ -520,9 +535,53 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(trader.okx.placed[0][0], "BTC-USDT-SWAP")
+        self.assertEqual(len(trades), 0)
+        self.assertIn("order-1", trader.pending_orders)
+        self.assertEqual(trader.pending_orders["order-1"]["decision"]["symbol"], "BTC-USDT-SWAP")
+
+    def test_pending_filled_order_logs_auto_trade(self):
+        class FakeOKX:
+            def get_order(self, symbol, order_id):
+                return {"state": "filled", "accFillSz": "3", "avgPx": "101"}
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        logger = TradeLogger(path)
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.okx = FakeOKX()
+        trader.logger = logger
+        trader.pending_orders = {
+            "order-1": {
+                "symbol": "BTC-USDT-SWAP",
+                "entry": 100,
+                "qty": 3,
+                "time": time.time(),
+                "timeout": 120,
+                "notified": False,
+                "trade_id": None,
+                "decision": {
+                    "symbol": "BTC-USDT-SWAP",
+                    "direction": "long",
+                    "entry": 100,
+                    "leverage": 3,
+                    "stop_loss": 95,
+                    "take_profit": 115,
+                },
+            }
+        }
+        messages = []
+        try:
+            trader._check_pending_orders(messages.append)
+            trades = logger.get_today_trades()
+        finally:
+            logger.close()
+            os.remove(path)
+
+        self.assertEqual(trader.pending_orders, {})
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0][3], "BTC-USDT-SWAP")
-        self.assertIn("order-1", trader.pending_orders)
+        self.assertEqual(trades[0][5], 101)
+        self.assertIn("已成交", messages[0])
 
 
 if __name__ == "__main__":

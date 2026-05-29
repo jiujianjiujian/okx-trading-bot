@@ -15,6 +15,7 @@ AI 自主交易引擎 v5 — 全功能增强版
 """
 
 import json
+import contextlib
 import time
 import threading
 from datetime import datetime, date, timedelta
@@ -1155,12 +1156,49 @@ class AutoTrader:
         expired = []
         now = time.time()
         for oid, info in list(self.pending_orders.items()):
-            if now - info["time"] > info["timeout"]:
-                positions = self.okx.get_positions()
-                filled = any(p["instId"] == info["symbol"] for p in positions)
-                ok, msg = self.okx.cancel_order(info["symbol"], oid)
+            order = {}
+            with contextlib.suppress(Exception):
+                order = self.okx.get_order(info["symbol"], oid)
+
+            state = order.get("state", "")
+            fill_qty = 0.0
+            avg_px = 0.0
+            with contextlib.suppress(ValueError, TypeError):
+                fill_qty = float(order.get("accFillSz") or 0)
+            with contextlib.suppress(ValueError, TypeError):
+                avg_px = float(order.get("avgPx") or 0)
+
+            if state == "filled" or (fill_qty > 0 and fill_qty >= info.get("qty", 0)):
+                if not info.get("trade_id"):
+                    decision = dict(info.get("decision", {}))
+                    if avg_px > 0:
+                        decision["entry"] = avg_px
+                    info["trade_id"] = self.logger.log_auto_trade(decision, fill_qty or info["qty"], oid)
                 if not info["notified"]:
-                    fill_text = "可能已部分/全部成交，已撤剩余委托" if filled else "未成交，已撤销"
+                    send(f"✅ *限价单已成交*\n📌 {info['symbol']} | 均价${avg_px or info['entry']:,.4f} | {fill_qty or info['qty']}张")
+                expired.append(oid)
+                continue
+
+            if now - info["time"] > info["timeout"]:
+                partially_filled = fill_qty > 0
+                possibly_filled = False
+                if not order:
+                    with contextlib.suppress(Exception):
+                        positions = self.okx.get_positions()
+                        possibly_filled = any(p["instId"] == info["symbol"] for p in positions)
+                ok, msg = self.okx.cancel_order(info["symbol"], oid)
+                if partially_filled and not info.get("trade_id"):
+                    decision = dict(info.get("decision", {}))
+                    if avg_px > 0:
+                        decision["entry"] = avg_px
+                    info["trade_id"] = self.logger.log_auto_trade(decision, fill_qty, oid)
+                if not info["notified"]:
+                    if partially_filled:
+                        fill_text = f"已成交{fill_qty:g}张，已撤剩余委托"
+                    elif possibly_filled:
+                        fill_text = "可能已部分/全部成交，已撤剩余委托"
+                    else:
+                        fill_text = "未成交，已撤销"
                     if ok:
                         send(f"⏰ *限价单超时已处理*\n"
                              f"📌 {info['symbol']} | 挂单${info['entry']:,.1f}\n"
@@ -2169,9 +2207,10 @@ class AutoTrader:
             send(f"❌ 价格偏离{abs(current_mid-d['entry'])/d['entry']*100:.1f}%，取消交易")
             return False
 
-        # 大仓位分批提示
+        # 大张数提示，附带名义价值和单笔风险，避免只看“张数”误判风险。
         if qty > 100:
-            send(f"⚠️ 大仓位({qty}张)，建议分批执行")
+            est_notional = qty * d["entry"] * ct_val
+            send(f"⚠️ 大张数({qty:g}张，名义约{est_notional:.1f}U，风险约{risk_amount:.1f}U)，建议分批执行")
 
         # 清算区止损验证: 止损不能太靠近清算聚集区
         clusters = self.liq_tracker.nearest_cluster(d["symbol"], d["entry"])
@@ -2209,17 +2248,12 @@ class AutoTrader:
                 f"📍 偏置: {regime_info.get('direction_bias','')}"
             )
             send(f"{em} {analysis_summary}")
-            try:
-                trade_id = self.logger.log_auto_trade(d, qty, oid)
-            except Exception as e:
-                trade_id = None
-                print(f"[交易记录] AI自主交易写入失败: {e}")
             # 追踪限价单
             timeout = 120 if d["mode"] == "scalp" else 300
             self.pending_orders[oid] = {
                 "symbol": d["symbol"], "entry": d["entry"], "qty": qty,
                 "time": time.time(), "timeout": timeout, "notified": False,
-                "trade_id": trade_id,
+                "trade_id": None, "decision": dict(d),
             }
         else:
             send(f"⛔ [{d['mode']}] 下单失败: {msg}")
@@ -2623,7 +2657,7 @@ class AutoTrader:
                         if d and d["action"]!="WAIT":
                             ok = self.execute(d, send)
                             emoji = "✅" if ok else "⛔"
-                            status = "已下单" if ok else "被拦截"
+                            status = "已提交限价单" if ok else "未下单"
                             send(f"{emoji} *[超短]* {sym} {d['action']} | 信{d['confidence']} | {status}\n"
                                  f"💵 入场: ${d['entry']:,.4f} | 🛑 止损: ${d['stop_loss']:,.4f}\n"
                                  f"🎯 止盈: ${d['take_profit']:,.4f} | 📐 盈亏比: {d['risk_reward']}:1\n"
@@ -2641,7 +2675,7 @@ class AutoTrader:
                         if d and d["action"]!="WAIT":
                             ok = self.execute(d, send)
                             emoji = "✅" if ok else "⛔"
-                            status = "已下单" if ok else "被拦截"
+                            status = "已提交限价单" if ok else "未下单"
                             send(f"{emoji} *[短线]* {sym} {d['action']} | 信{d['confidence']} | {status}\n"
                                  f"💵 入场: ${d['entry']:,.4f} | 🛑 止损: ${d['stop_loss']:,.4f}\n"
                                  f"🎯 止盈: ${d['take_profit']:,.4f} | 📐 盈亏比: {d['risk_reward']}:1\n"
