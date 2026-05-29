@@ -115,14 +115,17 @@ class LiquidationTracker:
         low = current_price * (1 - window_pct / 100)
         high = current_price * (1 + window_pct / 100)
 
-        long_sz = sum(sz for px, sz in self.long_liq.get(symbol, {}).items() if low <= px <= high)
-        short_sz = sum(sz for px, sz in self.short_liq.get(symbol, {}).items() if low <= px <= high)
+        # 只统计未来可能被扫到的两侧清算流动性:
+        # 下方多头清算 -> 价格向下磁吸；上方空头清算 -> 价格向上磁吸。
+        long_below = sum(sz for px, sz in self.long_liq.get(symbol, {}).items() if low <= px < current_price)
+        short_above = sum(sz for px, sz in self.short_liq.get(symbol, {}).items() if current_price < px <= high)
 
-        total = long_sz + short_sz
+        total = long_below + short_above
         if total == 0:
-            return {"pressure": "neutral", "ratio": 0, "total_liq": 0}
+            return {"pressure": "neutral", "ratio": 0, "total_liq": 0,
+                    "long_below": 0, "short_above": 0}
 
-        ratio = short_sz / total
+        ratio = short_above / total
         if ratio > 0.6:
             pressure = "bullish"
         elif ratio < 0.4:
@@ -130,7 +133,13 @@ class LiquidationTracker:
         else:
             pressure = "neutral"
 
-        return {"pressure": pressure, "ratio": round(ratio, 2), "total_liq": round(total, 1)}
+        return {
+            "pressure": pressure,
+            "ratio": round(ratio, 2),
+            "total_liq": round(total, 1),
+            "long_below": round(long_below, 1),
+            "short_above": round(short_above, 1),
+        }
 
     def nearest_cluster(self, symbol: str, price: float) -> dict:
         all_levels = {}
@@ -165,12 +174,18 @@ class LiquidationTracker:
         if c["above"]:
             lines.append(f"上方清算聚集: ${c['above']['price']:,.1f} ({c['above']['size']}张)")
 
-        top_long = sorted(self.long_liq.get(symbol, {}).items(), key=lambda x: -x[1])[:3]
-        top_short = sorted(self.short_liq.get(symbol, {}).items(), key=lambda x: -x[1])[:3]
+        top_long = sorted(
+            ((px, sz) for px, sz in self.long_liq.get(symbol, {}).items() if px < current_price),
+            key=lambda x: -x[1],
+        )[:3]
+        top_short = sorted(
+            ((px, sz) for px, sz in self.short_liq.get(symbol, {}).items() if px > current_price),
+            key=lambda x: -x[1],
+        )[:3]
 
         if top_long:
-            lines.append("最大多头清算区: " + ", ".join(f"${p:,.1f}({s:.0f})" for p, s in top_long))
+            lines.append("下方多头清算区: " + ", ".join(f"${p:,.1f}({s:.0f})" for p, s in top_long))
         if top_short:
-            lines.append("最大空头清算区: " + ", ".join(f"${p:,.1f}({s:.0f})" for p, s in top_short))
+            lines.append("上方空头清算区: " + ", ".join(f"${p:,.1f}({s:.0f})" for p, s in top_short))
 
         return "\n".join(lines)

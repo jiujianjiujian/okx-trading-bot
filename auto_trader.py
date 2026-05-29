@@ -2610,22 +2610,27 @@ class AutoTrader:
                 time.sleep(60)
 
     def _calc_direction_score(self, market, chain, smc, liq_text, structure) -> dict:
-        """规则评分: 综合多维度给出方向建议"""
-        score = 0
-        direction = "WAIT"
+        """规则评分: 多空分别计分；冲突或条件差时明确观望。"""
+        long_score = 0
+        short_score = 0
         details = []
+        blockers = []
 
         # 1. 多周期 EMA 对齐 (25分)
         tf_bullish = sum(1 for tf in ["1H","4H","1D"]
                          if tf in market and market[tf].get("ema20",0) > market[tf].get("ema50",0))
+        tf_count = sum(1 for tf in ["1H","4H","1D"] if tf in market)
+        tf_bearish = max(0, tf_count - tf_bullish)
         if tf_bullish == 3:
-            score += 25; direction = "LONG"; details.append("3周期EMA多头对齐")
+            long_score += 25; details.append("3周期EMA多头对齐")
         elif tf_bullish == 2:
-            score += 18; details.append("2周期EMA偏多")
+            long_score += 18; details.append("2周期EMA偏多")
         elif tf_bullish == 1:
-            score += 8; details.append("EMA方向分歧")
+            long_score += 8; short_score += 8; blockers.append("EMA方向分歧")
         else:
-            score += 25; direction = "SHORT"; details.append("3周期EMA空头对齐")
+            short_score += 25; details.append("3周期EMA空头对齐")
+        if tf_bearish == 2:
+            short_score += 18; details.append("2周期EMA偏空")
 
         # 2. MACD 动量 (15分)
         macd_bullish = 0
@@ -2635,12 +2640,15 @@ class AutoTrader:
                 if m.get("is_bullish"): macd_bullish += 1
                 if m.get("crossed_up"): details.append(f"{tf} MACD金叉")
                 if m.get("crossed_down"): details.append(f"{tf} MACD死叉")
+        macd_bearish = tf_count - macd_bullish
         if macd_bullish >= 2:
-            score += 15
+            long_score += 15
         elif macd_bullish == 1:
-            score += 8
-        else:
-            score += 15 if direction == "SHORT" else 10
+            long_score += 8
+        if macd_bearish >= 2:
+            short_score += 15
+        elif macd_bearish == 1:
+            short_score += 8
 
         # 3. 布林带位置 (10分)
         main = market.get("1D", next(iter(market.values())))
@@ -2648,32 +2656,32 @@ class AutoTrader:
         if bb_range > 0:
             price_pos = (main.get("price", 0) - main.get("bb_lower", 0)) / bb_range
             if price_pos < 0.2:
-                score += 10; details.append("价格触及布林下轨(超卖)")
+                long_score += 10; details.append("布林下轨超卖=反弹条件")
             elif price_pos > 0.8:
-                score += 10; details.append("价格触及布林上轨(超买)")
+                short_score += 10; details.append("布林上轨超买=回落条件")
             elif 0.4 <= price_pos <= 0.6:
-                score += 5; details.append("布林中轨附近(中性)")
+                long_score += 3; short_score += 3; details.append("布林中轨附近(中性)")
 
         # 4. 链上数据 (15分)
         rate = chain.get("funding_rate", 0)
         oi_change = chain.get("oi_change_pct", 0)
         if rate > 0.01 and oi_change > 5:
             details.append("费率偏高+OI增(多头拥挤)")
+            short_score += 8
         elif rate < -0.005 and oi_change > 3:
             details.append("负费率+OI增(空头拥挤)")
-            score += 10
+            long_score += 8
         elif abs(rate) < 0.005:
-            score += 8; details.append("费率中性")
-        score += min(7, max(0, int((2 - abs(rate) * 200))))
+            long_score += 4; short_score += 4; details.append("费率中性")
 
         # 5. SMC 结构 (15分)
         smc_trend = smc.get("trend", "")
         if smc_trend == "bullish":
-            score += 15 if direction == "LONG" else 8
+            long_score += 15; details.append("SMC结构偏多")
         elif smc_trend == "bearish":
-            score += 15 if direction == "SHORT" else 8
+            short_score += 15; details.append("SMC结构偏空")
         else:
-            score += 5
+            long_score += 3; short_score += 3
 
         # 5b. SMC 流动性陷阱 — 反转预警
         sweep = smc.get("liquidity_sweep", {})
@@ -2681,40 +2689,48 @@ class AutoTrader:
             sweep_type = sweep.get("type", "")
             if sweep_type == "short_trap":
                 details.append("SMC空头陷阱(反转预警)")
-                if direction == "SHORT": score -= 15  # 做空遇空头陷阱=危险
+                long_score += 8; short_score -= 15
             elif sweep_type == "long_trap":
                 details.append("SMC多头陷阱(反转预警)")
-                if direction == "LONG": score -= 15
+                short_score += 8; long_score -= 15
 
         # 6. 清算压力 (10分)
-        if "bullish" in liq_text.lower():
-            score += 10
-        elif "bearish" in liq_text.lower():
-            score += 10 if direction == "SHORT" else 5
+        liq_lower = liq_text.lower()
+        if "bullish" in liq_lower:
+            long_score += 8; details.append("上方空头清算磁吸")
+        elif "bearish" in liq_lower:
+            short_score += 8; details.append("下方多头清算磁吸")
 
         # 7. 趋势强度 (10分)
         ts = structure.get("trend_strength", "")
-        if "强多" in ts: score += 10
-        elif "偏多" in ts: score += 7
-        elif "强空" in ts: score += 10
-        elif "偏空" in ts: score += 7
-        elif "震荡" in ts: score += 3
+        if "强多" in ts: long_score += 10
+        elif "偏多" in ts: long_score += 7
+        elif "强空" in ts: short_score += 10
+        elif "偏空" in ts: short_score += 7
+        elif "震荡" in ts:
+            long_score += 2; short_score += 2; blockers.append("趋势强度=震荡")
 
         # 最终判定
-        if direction == "WAIT":
-            direction = "LONG" if tf_bullish >= 2 else "SHORT"
+        long_score = max(0, min(100, long_score))
+        short_score = max(0, min(100, short_score))
+        edge = abs(long_score - short_score)
+        score = max(long_score, short_score)
+        direction = "LONG" if long_score > short_score else "SHORT"
+        if edge < 10 or score < 55 or len(blockers) >= 2:
+            direction = "WAIT"
 
         icon_map = {"LONG": "\U0001f7e2", "SHORT": "\U0001f534"}
-        if score >= 65:
+        if direction == "WAIT":
+            conclusion = "⚪ 观望"
+        elif score >= 70:
             conclusion = f"{icon_map.get(direction, '')} {direction} (强信号)"
-        elif score >= 50:
+        else:
             dir_cn = "多" if direction == "LONG" else "空"
             conclusion = f"\U0001f7e1 偏{dir_cn} (中等)"
-        else:
-            conclusion = "⚪ 观望"
 
         return {"score": score, "direction": direction, "conclusion": conclusion,
-                "details": details, "tf_bullish": tf_bullish}
+                "details": details, "blockers": blockers, "long_score": long_score,
+                "short_score": short_score, "edge": edge, "tf_bullish": tf_bullish}
 
     def market_report(self, symbol: str) -> str:
         """盘面分析报告 v2 — MACD/Boll/VWAP + 方向建议 + 关键位"""
@@ -2758,7 +2774,7 @@ class AutoTrader:
         # 方向评分
         decision = self._calc_direction_score(market, chain, smc, liq, structure)
 
-        # 入场/止损/止盈
+        # 入场/止损/止盈只在可执行方向下生成，避免 WAIT 被误当成 SHORT。
         atr_1h = market.get("1H", {}).get("atr", 0)
         # 从 SMC order_blocks 提取 OB 价格
         ob_blocks = smc.get("order_blocks", [])
@@ -2770,6 +2786,7 @@ class AutoTrader:
             if ob.get("type") == "demand" and demand_ob is None:
                 demand_ob = ob.get("price")
 
+        trade_plan = None
         if decision["direction"] == "LONG":
             entry_low = current * 0.997
             entry_high = current
@@ -2784,7 +2801,8 @@ class AutoTrader:
                 tp2 = supply_ob
             else:
                 tp2 = current + atr_1h * 3
-        else:
+            trade_plan = (entry_low, entry_high, sl, tp1, tp2)
+        elif decision["direction"] == "SHORT":
             entry_low = current
             entry_high = current * 1.003
             sl = supply_ob if supply_ob and supply_ob > current else (current + atr_1h * 2) if atr_1h > 0 else current * 1.02
@@ -2798,6 +2816,41 @@ class AutoTrader:
                 tp2 = demand_ob
             else:
                 tp2 = current - atr_1h * 3
+            trade_plan = (entry_low, entry_high, sl, tp1, tp2)
+
+        min_depth = self.safety.get("min_depth_1pct", self.HARD_RULES["safety"]["min_depth_1pct"])
+        max_spread = self.safety.get("max_spread_pct", self.HARD_RULES["safety"]["max_spread_pct"])
+        depth_1pct = ms.get("depth_1pct", 0)
+        signal_warnings = list(decision.get("blockers", []))
+        if decision["direction"] == "WAIT":
+            if decision.get("edge", 0) < 10:
+                signal_warnings.append("多空分差不足")
+            if decision["score"] < 55:
+                signal_warnings.append("信号强度不足")
+        hard_blockers = []
+        if structure.get("range_bound"):
+            hard_blockers.append("窄幅横盘")
+        if ms.get("spread", 0) > max_spread:
+            hard_blockers.append(f"价差偏大({ms.get('spread', 0):.3f}%>{max_spread:.3f}%)")
+        if depth_1pct < min_depth:
+            hard_blockers.append(f"1%深度不足({depth_1pct:.0f}<{min_depth:.0f})")
+        if ms.get("liquidity_gap"):
+            hard_blockers.append("流动性断层")
+
+        actionable = (
+            trade_plan is not None
+            and decision["score"] >= 55
+            and not structure.get("range_bound")
+            and ms.get("spread", 0) <= max_spread
+            and depth_1pct >= min_depth
+            and not ms.get("liquidity_gap")
+        )
+        if ms.get("liquidity_gap"):
+            liquidity_tag = "流动性断层⚠️"
+        elif depth_1pct < min_depth:
+            liquidity_tag = "深度不足⚠️"
+        else:
+            liquidity_tag = "流动性均匀"
 
         lines = [
             f"*{symbol} 盘面分析*",
@@ -2817,21 +2870,31 @@ class AutoTrader:
             f"*趋势强度:* {structure.get('trend_strength', '不明')}",
             f"*SMC结构:* {smc.get('summary', '未知')}",
             f"*订单流:* 价差{ms.get('spread',0):.3f}% | 买卖比{ms.get('buy_sell_ratio',0.5):.2f} | "
-            f"1%深度${ms.get('depth_1pct',0):,.0f} | {'流动性断层⚠️' if ms.get('liquidity_gap') else '流动性均匀'}",
+            f"1%深度{depth_1pct:,.0f}张 | {liquidity_tag}",
             f"*链上数据:* 费率{chain['funding_rate']*100:.3f}% | OI {chain.get('oi_val', 0):,.0f}张 | 拥挤度: {chain.get('crowd_signal', '中性')}",
             f"  {chain.get('explanation', '')}",
             f"*清算:* {liq}",
             "",
             f"*综合判定:* {decision['conclusion']} (评分: {decision['score']}/100)",
+            f"  多头分 {decision.get('long_score', 0)}/100 | 空头分 {decision.get('short_score', 0)}/100 | 差值 {decision.get('edge', 0)}",
         ])
         if decision["details"]:
             lines.append(f"  {' | '.join(decision['details'][:4])}")
-        if decision["score"] >= 40:
+        if signal_warnings:
+            lines.append(f"  信号提示: {' | '.join(dict.fromkeys(signal_warnings))}")
+        if hard_blockers:
+            lines.append(f"  风控阻断: {' | '.join(dict.fromkeys(hard_blockers))}")
+        if actionable and trade_plan:
+            entry_low, entry_high, sl, tp1, tp2 = trade_plan
             lines.append(f"*建议:* 入场 ${entry_low:,.0f}-${entry_high:,.0f} | "
                          f"止损 ${sl:,.0f} | 止盈 ${tp1:,.0f} / ${tp2:,.0f}")
 
         if structure.get("range_bound"):
             lines.append("⚠️ 窄幅横盘，等待放量突破")
+        if depth_1pct < min_depth:
+            lines.append(f"⚠️ 深度不足({depth_1pct:,.0f}张 < {min_depth:,.0f}张)，不建议开仓")
+        if ms.get("liquidity_gap"):
+            lines.append("⚠️ 流动性断层，止损可能被击穿，不建议开仓")
         if structure.get("pump_warning"):
             lines.append("\U0001f6a8 急涨预警")
         if structure.get("dump_warning"):

@@ -5,6 +5,7 @@ import unittest
 from auto_trader import AutoTrader
 import main
 from backtest_engine import BacktestEngine
+from liquidation_tracker import LiquidationTracker
 from okx_client import OKXClient
 from risk_manager import RiskManager
 from signal_parser import TradeSignal
@@ -256,6 +257,131 @@ class ExecutionSafetyTests(unittest.TestCase):
 
         self.assertEqual((trader.scalp, trader.swing), before)
         self.assertIn("硬风控未自动改动", messages[0])
+
+    def test_conflicting_market_score_returns_wait_instead_of_short(self):
+        trader = AutoTrader.__new__(AutoTrader)
+        market = {
+            "1H": {
+                "price": 100,
+                "ema20": 101,
+                "ema50": 100,
+                "macd": {"is_bullish": True},
+                "bb_lower": 99,
+                "bb_upper": 110,
+            },
+            "4H": {
+                "price": 100,
+                "ema20": 98,
+                "ema50": 100,
+                "macd": {"is_bullish": False},
+                "bb_lower": 99,
+                "bb_upper": 110,
+            },
+            "1D": {
+                "price": 100,
+                "ema20": 98,
+                "ema50": 100,
+                "macd": {"is_bullish": False},
+                "bb_lower": 99,
+                "bb_upper": 110,
+            },
+        }
+
+        decision = trader._calc_direction_score(
+            market,
+            {"funding_rate": 0, "oi_change_pct": 0},
+            {"trend": "bullish"},
+            "清算压力: bullish",
+            {"trend_strength": "震荡"},
+        )
+
+        self.assertEqual(decision["direction"], "WAIT")
+        self.assertIn("观望", decision["conclusion"])
+        self.assertGreater(decision["long_score"], decision["short_score"])
+        self.assertIn("趋势强度=震荡", decision["blockers"])
+
+    def test_market_report_does_not_emit_trade_advice_when_wait_or_depth_low(self):
+        class FakeLiq:
+            _running = False
+
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.safety = AutoTrader.HARD_RULES["safety"]
+        trader.liq_tracker = FakeLiq()
+        trader._market = lambda symbol, timeframes: {
+            "1H": {
+                "price": 100,
+                "ema20": 101,
+                "ema50": 100,
+                "macd": {"is_bullish": True},
+                "bb_lower": 99,
+                "bb_upper": 110,
+                "vwap": 102,
+                "supertrend": {"trend": "up"},
+                "adx": {"adx": 17},
+                "support": 98,
+                "resistance": 106,
+                "atr": 2,
+            },
+            "4H": {
+                "price": 100,
+                "ema20": 98,
+                "ema50": 100,
+                "macd": {"is_bullish": False},
+                "bb_lower": 99,
+                "bb_upper": 110,
+                "vwap": 103,
+                "supertrend": {"trend": "up"},
+                "adx": {"adx": 43},
+            },
+            "1D": {
+                "price": 100,
+                "ema20": 98,
+                "ema50": 100,
+                "macd": {"is_bullish": False},
+                "bb_lower": 99,
+                "bb_upper": 110,
+                "vwap": 103,
+                "supertrend": {"trend": "up"},
+                "adx": {"adx": 2},
+            },
+        }
+        trader._onchain = lambda symbol: {
+            "funding_rate": 0,
+            "oi_change_pct": 0,
+            "oi_val": 1000,
+            "crowd_signal": "中性",
+            "explanation": "",
+        }
+        trader._market_structure = lambda symbol: {"trend_strength": "震荡", "range_bound": True}
+        trader._smc_structure = lambda symbol: {"trend": "bullish", "summary": "趋势:bullish", "order_blocks": []}
+        trader._microstructure = lambda symbol: {
+            "spread": 0,
+            "buy_sell_ratio": 0.5,
+            "depth_1pct": 2464,
+            "liquidity_gap": False,
+        }
+
+        report = trader.market_report("BTC-USDT-SWAP")
+
+        self.assertIn("观望", report)
+        self.assertIn("深度不足", report)
+        self.assertIn("风控阻断", report)
+        self.assertNotIn("*建议:*", report)
+
+    def test_liquidation_summary_labels_future_relevant_sides(self):
+        tracker = LiquidationTracker()
+        symbol = "BTC-USDT-SWAP"
+        tracker.long_liq[symbol][72400] = 32740
+        tracker.long_liq[symbol][74000] = 99999
+        tracker.short_liq[symbol][73600] = 31544
+        tracker.short_liq[symbol][73900] = 1405
+
+        summary = tracker.summary(symbol, 73815)
+
+        self.assertIn("下方多头清算区: $72,400.0(32740)", summary)
+        self.assertIn("上方空头清算区: $73,900.0(1405)", summary)
+        self.assertNotIn("最大空头清算区", summary)
+        self.assertNotIn("$74,000.0(99999)", summary)
 
 
 if __name__ == "__main__":
