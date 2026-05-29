@@ -4,6 +4,7 @@
 
 import sqlite3
 import json
+import threading
 from datetime import datetime, date, timedelta
 from config import DB_PATH
 
@@ -11,8 +12,9 @@ from config import DB_PATH
 class TradeLogger:
     """交易记录持久化存储"""
 
-    def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    def __init__(self, db_path: str = DB_PATH):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._lock = threading.Lock()
         self._init_db()
 
     def _init_db(self):
@@ -53,6 +55,22 @@ class TradeLogger:
                 FOREIGN KEY (signal_id) REFERENCES signals(id)
             )
         """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_decisions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                time        TEXT NOT NULL,
+                symbol      TEXT NOT NULL,
+                mode        TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                reason      TEXT,
+                confidence  INTEGER,
+                risk_reward REAL,
+                entry       REAL,
+                stop_loss   REAL,
+                take_profit REAL,
+                raw_data    TEXT
+            )
+        """)
         self.conn.commit()
 
     # ----------------------------------------------------------------
@@ -62,32 +80,34 @@ class TradeLogger:
     def log_signal(self, signal) -> int:
         """记录收到的信号，返回信号ID"""
         now = datetime.now().isoformat()
-        cursor = self.conn.execute(
-            """INSERT INTO signals (time, symbol, direction, price, stop_loss,
-               take_profit, strategy, interval, comment, raw_data, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received')""",
-            (
-                now,
-                signal.okx_symbol,
-                signal.direction,
-                signal.price,
-                signal.stop_loss,
-                signal.take_profit,
-                signal.strategy,
-                signal.interval,
-                signal.comment,
-                json.dumps(signal.raw_data, ensure_ascii=False),
-            ),
-        )
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.execute(
+                """INSERT INTO signals (time, symbol, direction, price, stop_loss,
+                   take_profit, strategy, interval, comment, raw_data, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received')""",
+                (
+                    now,
+                    signal.okx_symbol,
+                    signal.direction,
+                    signal.price,
+                    signal.stop_loss,
+                    signal.take_profit,
+                    signal.strategy,
+                    signal.interval,
+                    signal.comment,
+                    json.dumps(signal.raw_data, ensure_ascii=False),
+                ),
+            )
+            self.conn.commit()
         return cursor.lastrowid
 
     def update_signal_status(self, signal_id: int, status: str):
         """更新信号处理状态"""
-        self.conn.execute(
-            "UPDATE signals SET status=? WHERE id=?", (status, signal_id)
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE signals SET status=? WHERE id=?", (status, signal_id)
+            )
+            self.conn.commit()
 
     # ----------------------------------------------------------------
     # 交易记录
@@ -96,34 +116,89 @@ class TradeLogger:
     def log_trade(self, signal_id: int, signal, quantity: int, leverage: int, order_id: str) -> int:
         """记录新开仓"""
         now = datetime.now().isoformat()
-        cursor = self.conn.execute(
-            """INSERT INTO trades (signal_id, time, symbol, direction, entry_price,
-               quantity, leverage, stop_loss, take_profit, order_id, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
-            (
-                signal_id,
-                now,
-                signal.okx_symbol,
-                signal.direction,
-                signal.price,
-                quantity,
-                leverage,
-                signal.stop_loss,
-                signal.take_profit,
-                order_id,
-            ),
-        )
-        self.conn.commit()
+        with self._lock:
+            cursor = self.conn.execute(
+                """INSERT INTO trades (signal_id, time, symbol, direction, entry_price,
+                   quantity, leverage, stop_loss, take_profit, order_id, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                (
+                    signal_id,
+                    now,
+                    signal.okx_symbol,
+                    signal.direction,
+                    signal.price,
+                    quantity,
+                    leverage,
+                    signal.stop_loss,
+                    signal.take_profit,
+                    order_id,
+                ),
+            )
+            self.conn.commit()
+        return cursor.lastrowid
+
+    def log_auto_trade(self, decision: dict, quantity: float, order_id: str) -> int:
+        """记录 AI 自主交易开仓。"""
+        now = datetime.now().isoformat()
+        with self._lock:
+            cursor = self.conn.execute(
+                """INSERT INTO trades (signal_id, time, symbol, direction, entry_price,
+                   quantity, leverage, stop_loss, take_profit, order_id, status)
+                   VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                (
+                    now,
+                    decision.get("symbol"),
+                    decision.get("direction"),
+                    decision.get("entry"),
+                    quantity,
+                    decision.get("leverage"),
+                    decision.get("stop_loss"),
+                    decision.get("take_profit"),
+                    order_id,
+                ),
+            )
+            self.conn.commit()
         return cursor.lastrowid
 
     def close_trade(self, trade_id: int, exit_price: float, pnl: float):
         """标记交易已平仓"""
         now = datetime.now().isoformat()
-        self.conn.execute(
-            "UPDATE trades SET status='closed', exit_price=?, pnl=?, close_time=? WHERE id=?",
-            (exit_price, pnl, now, trade_id),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE trades SET status='closed', exit_price=?, pnl=?, close_time=? WHERE id=?",
+                (exit_price, pnl, now, trade_id),
+            )
+            self.conn.commit()
+
+    # ----------------------------------------------------------------
+    # AI 决策审计
+    # ----------------------------------------------------------------
+
+    def log_ai_decision(self, symbol: str, mode: str, decision: dict | None):
+        """持久化每次 AI 扫描结果，包含 WAIT 原因。"""
+        now = datetime.now().isoformat()
+        data = decision or {}
+        action = data.get("action", "NONE")
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO ai_decisions (time, symbol, mode, action, reason,
+                   confidence, risk_reward, entry, stop_loss, take_profit, raw_data)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    now,
+                    symbol,
+                    mode,
+                    action,
+                    data.get("reason", ""),
+                    data.get("confidence"),
+                    data.get("risk_reward"),
+                    data.get("entry"),
+                    data.get("stop_loss"),
+                    data.get("take_profit"),
+                    json.dumps(data, ensure_ascii=False, default=str),
+                ),
+            )
+            self.conn.commit()
 
     # ----------------------------------------------------------------
     # 查询
@@ -153,6 +228,42 @@ class TradeLogger:
             (today,),
         )
         return cursor.fetchall()
+
+    def get_recent_ai_decisions(self, limit: int = 100) -> list:
+        """获取最近 AI 决策审计记录。"""
+        limit = max(1, min(int(limit), 500))
+        cursor = self.conn.execute(
+            """SELECT time, symbol, mode, action, reason, confidence, risk_reward
+               FROM ai_decisions ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        )
+        return cursor.fetchall()
+
+    def get_ai_decision_stats(self, hours: int = 24) -> dict:
+        """统计最近一段时间 AI 扫描通过率和主要观望原因。"""
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        cursor = self.conn.execute(
+            """SELECT mode, action, reason FROM ai_decisions
+               WHERE time>=? ORDER BY id DESC""",
+            (cutoff,),
+        )
+        rows = cursor.fetchall()
+        by_mode = {}
+        reasons = {}
+        for mode, action, reason in rows:
+            stats = by_mode.setdefault(mode, {"total": 0, "wait": 0, "trade": 0, "none": 0})
+            stats["total"] += 1
+            if action in ("LONG", "SHORT"):
+                stats["trade"] += 1
+            elif action == "WAIT":
+                stats["wait"] += 1
+            else:
+                stats["none"] += 1
+            if action == "WAIT" and reason:
+                key = str(reason)[:80]
+                reasons[key] = reasons.get(key, 0) + 1
+        top_reasons = sorted(reasons.items(), key=lambda x: -x[1])[:10]
+        return {"hours": hours, "total": len(rows), "by_mode": by_mode, "top_wait_reasons": top_reasons}
 
     def get_session_stats(self, days: int = 30) -> dict:
         """统计各时段胜率 (北京时间)"""

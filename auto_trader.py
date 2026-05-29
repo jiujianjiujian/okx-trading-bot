@@ -23,7 +23,7 @@ import http_wrapper as requests
 
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, PROXY_URL,
-    MAX_DAILY_LOSS, AUTO_TRADE,
+    MAX_DAILY_LOSS, AUTO_TRADE, TRADING_UNIVERSE,
 )
 from risk_manager import RiskManager
 from okx_client import OKXClient
@@ -41,6 +41,17 @@ TOP_COINS = [
     "ADA-USDT-SWAP", "AVAX-USDT-SWAP", "LINK-USDT-SWAP",
     "DOT-USDT-SWAP",
 ]
+EXCLUDED_DYNAMIC_BASES = {"XAU", "XAG"}
+TRADE_STATUS_IDX = 11
+TRADE_PNL_IDX = 13
+
+
+def _fallback_candidates() -> list:
+    return [
+        {"symbol": s, "base": s.replace("-USDT-SWAP", ""), "volume": 0,
+         "spread": 0.1, "change_24h": 0}
+        for s in TOP_COINS
+    ]
 
 # 交易时段 (UTC)
 SESSIONS = {
@@ -1504,7 +1515,7 @@ class AutoTrader:
         if conf < adjusted["min_confidence"]:
             return {"action":"WAIT","reason":f"最终置信{conf}<{adjusted['min_confidence']}","market":main,"mode":mode}
 
-        return {"action":action,"direction":direction,"mode":mode,"entry":entry,
+        return {"action":action,"direction":direction,"symbol":symbol,"mode":mode,"entry":entry,
                 "stop_loss":sl,"take_profit":tp,"leverage":lev,"confidence":conf,
                 "trailing_pct":float(decision.get("trailing_pct",params["trailing_pct"])),
                 "risk_reward":round(rr,2),"liquidation":round(liq,1),
@@ -2198,11 +2209,17 @@ class AutoTrader:
                 f"📍 偏置: {regime_info.get('direction_bias','')}"
             )
             send(f"{em} {analysis_summary}")
+            try:
+                trade_id = self.logger.log_auto_trade(d, qty, oid)
+            except Exception as e:
+                trade_id = None
+                print(f"[交易记录] AI自主交易写入失败: {e}")
             # 追踪限价单
             timeout = 120 if d["mode"] == "scalp" else 300
             self.pending_orders[oid] = {
                 "symbol": d["symbol"], "entry": d["entry"], "qty": qty,
                 "time": time.time(), "timeout": timeout, "notified": False,
+                "trade_id": trade_id,
             }
         else:
             send(f"⛔ [{d['mode']}] 下单失败: {msg}")
@@ -2214,10 +2231,10 @@ class AutoTrader:
 
     def _update_loss_streak(self, send):
         trades = self.logger.get_today_trades()
-        closed = [t for t in trades if t[9]=="closed"]
+        closed = [t for t in trades if t[TRADE_STATUS_IDX]=="closed"]
         streak = 0
         for t in reversed(closed):
-            pnl = t[13] or 0
+            pnl = t[TRADE_PNL_IDX] or 0
             if pnl < 0: streak += 1
             else: break
         self.consecutive_losses = streak
@@ -2240,7 +2257,7 @@ class AutoTrader:
     def _strategy_health_check(self, send) -> dict:
         """分析最近20笔交易，诊断策略是否失效"""
         trades = self.logger.get_today_trades()
-        closed = [t for t in trades if t[9] == "closed"]
+        closed = [t for t in trades if t[TRADE_STATUS_IDX] == "closed"]
         # 也查昨天数据
         all_trades = closed
         recent = all_trades[-20:] if len(all_trades) >= 20 else all_trades
@@ -2248,7 +2265,7 @@ class AutoTrader:
         if len(recent) < 5:
             return {"status": "ok", "message": "交易太少，暂不评估"}
 
-        pnls = [t[13] for t in recent if t[13] is not None]
+        pnls = [t[TRADE_PNL_IDX] for t in recent if t[TRADE_PNL_IDX] is not None]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p < 0]
 
@@ -2338,10 +2355,10 @@ class AutoTrader:
 
     def daily_optimize(self, send):
         trades = self.logger.get_today_trades()
-        closed = [t for t in trades if t[9]=="closed"]
+        closed = [t for t in trades if t[TRADE_STATUS_IDX]=="closed"]
         if len(closed)<2: return
 
-        pnls = [t[13] for t in closed if t[13] is not None]
+        pnls = [t[TRADE_PNL_IDX] for t in closed if t[TRADE_PNL_IDX] is not None]
         wins = sum(1 for p in pnls if p>0)
         total = len(pnls)
         wr = wins/total*100
@@ -2390,7 +2407,8 @@ class AutoTrader:
                 proxies=self.proxies, timeout=10,
             )
             data = r.json()
-            if data.get("code") != "0": return TOP_COINS
+            if data.get("code") != "0":
+                return _fallback_candidates()
 
             all_tickers = data.get("data", [])
             filtered = []
@@ -2399,6 +2417,10 @@ class AutoTrader:
                 inst_id = t.get("instId", "")
                 if not inst_id.endswith("-USDT-SWAP"): continue
                 base = inst_id.replace("-USDT-SWAP", "")
+                if base in EXCLUDED_DYNAMIC_BASES:
+                    continue
+                if TRADING_UNIVERSE != "dynamic" and inst_id not in TOP_COINS:
+                    continue
 
                 vol_24h = float(t.get("vol24h", 0))
                 ask_px = float(t.get("askPx", 0))
@@ -2434,11 +2456,11 @@ class AutoTrader:
 
         except Exception as e:
             print(f"[选币] 异常: {e}")
-            return [{"symbol": s, "base": s.replace("-USDT-SWAP",""), "volume": 0, "spread": 0.1, "change_24h": 0} for s in TOP_COINS]
+            return _fallback_candidates()
 
         if candidates: return candidates
         # fallback: 补全必需字段，防止 _pick_best_candidates KeyError
-        return [{"symbol": s, "base": s.replace("-USDT-SWAP",""), "volume": 0, "spread": 0.1, "change_24h": 0} for s in TOP_COINS]
+        return _fallback_candidates()
 
     def _pick_best_candidates(self, candidates: list, count: int, mode: str) -> list:
         """AI 从候选池中选出最佳交易机会"""
@@ -2479,6 +2501,28 @@ class AutoTrader:
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return [s["coin"] for s in scored[:count]]
+
+    def _record_ai_decision(self, symbol: str, mode: str, decision: Optional[dict]):
+        """记录每次 AI 扫描结果，尤其是不开仓原因。"""
+        if not hasattr(self, "logger") or self.logger is None:
+            return
+        data = dict(decision or {})
+        data.setdefault("symbol", symbol)
+        data.setdefault("mode", mode)
+        try:
+            self.logger.log_ai_decision(symbol, mode, data if decision else None)
+        except Exception as e:
+            print(f"[AI决策记录] 失败: {e}")
+            return
+
+        action = data.get("action", "NONE")
+        reason = str(data.get("reason", ""))[:160]
+        if action == "WAIT":
+            print(f"[AI决策] {mode} {symbol} WAIT | {reason}")
+        elif action in ("LONG", "SHORT"):
+            print(f"[AI决策] {mode} {symbol} {action} | 信{data.get('confidence')} | {reason}")
+        else:
+            print(f"[AI决策] {mode} {symbol} NONE | 无有效决策")
 
     # ================================================================
     # 主循环
@@ -2575,6 +2619,7 @@ class AutoTrader:
                         if not self._running: break
                         sym = coin["symbol"]
                         d = self._dual_ai_decision(sym, "scalp", self.scalp)
+                        self._record_ai_decision(sym, "scalp", d)
                         if d and d["action"]!="WAIT":
                             ok = self.execute(d, send)
                             emoji = "✅" if ok else "⛔"
@@ -2592,6 +2637,7 @@ class AutoTrader:
                         if not self._running: break
                         sym = coin["symbol"]
                         d = self._dual_ai_decision(sym, "swing", self.swing)
+                        self._record_ai_decision(sym, "swing", d)
                         if d and d["action"]!="WAIT":
                             ok = self.execute(d, send)
                             emoji = "✅" if ok else "⛔"

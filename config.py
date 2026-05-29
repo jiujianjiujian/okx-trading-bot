@@ -34,6 +34,7 @@ MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "3"))             # 最大持仓�
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "5.0"))       # 日内最大亏损 %
 AUTO_TRADE = os.getenv("AUTO_TRADE", "false").lower() == "true"  # 是否自动下单
 AI_AUTO_START = os.getenv("AI_AUTO_START", "false").lower() == "true"  # 启动时自动开启AI自主交易
+TRADING_UNIVERSE = os.getenv("TRADING_UNIVERSE", "core").lower()  # core=主流币, dynamic=全市场筛选
 
 # ============================================
 # Webhook 配置

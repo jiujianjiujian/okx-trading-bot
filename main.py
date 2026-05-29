@@ -333,6 +333,18 @@ async def api_stats(_admin=ADMIN_DEP):
     return logger.get_trade_stats()
 
 
+@app.get("/api/ai-decisions")
+async def api_ai_decisions(limit: int = 100, _admin=ADMIN_DEP):
+    """查询最近 AI 扫描/观望原因"""
+    return logger.get_recent_ai_decisions(limit)
+
+
+@app.get("/api/ai-decision-stats")
+async def api_ai_decision_stats(hours: int = 24, _admin=ADMIN_DEP):
+    """统计 AI 扫描通过率和主要观望原因"""
+    return logger.get_ai_decision_stats(hours)
+
+
 @app.get("/dashboard")
 async def dashboard(_admin=ADMIN_DEP):
     """实时仪表盘 HTML"""

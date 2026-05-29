@@ -342,7 +342,7 @@ class TelegramBot:
             return
 
         trades = self.logger.get_today_trades()
-        closed = [t for t in trades if t[9] == "closed"]
+        closed = [t for t in trades if t[11] == "closed"]
 
         if not closed:
             await update.message.reply_text("📭 今天还没有已平仓的交易")

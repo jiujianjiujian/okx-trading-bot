@@ -1,7 +1,10 @@
 import asyncio
+import os
+import tempfile
 import time
 import unittest
 
+import auto_trader as auto_trader_module
 from auto_trader import AutoTrader
 import main
 from backtest_engine import BacktestEngine
@@ -9,6 +12,7 @@ from liquidation_tracker import LiquidationTracker
 from okx_client import OKXClient
 from risk_manager import RiskManager
 from signal_parser import TradeSignal
+from trade_logger import TradeLogger
 
 
 class FakeNotifier:
@@ -232,10 +236,10 @@ class ExecutionSafetyTests(unittest.TestCase):
         class FakeLogger:
             def get_today_trades(self):
                 row_win = [None] * 14
-                row_win[9] = "closed"
+                row_win[11] = "closed"
                 row_win[13] = 3.0
                 row_loss = [None] * 14
-                row_loss[9] = "closed"
+                row_loss[11] = "closed"
                 row_loss[13] = -1.0
                 return [row_win, row_loss]
 
@@ -382,6 +386,143 @@ class ExecutionSafetyTests(unittest.TestCase):
         self.assertIn("上方空头清算区: $73,900.0(1405)", summary)
         self.assertNotIn("最大空头清算区", summary)
         self.assertNotIn("$74,000.0(99999)", summary)
+
+    def test_core_universe_filters_non_core_dynamic_candidates(self):
+        class FakeResponse:
+            def json(self):
+                return {
+                    "code": "0",
+                    "data": [
+                        {"instId": "BTC-USDT-SWAP", "vol24h": "99999999", "askPx": "100000",
+                         "bidPx": "99990", "askSz": "1", "bidSz": "1", "open24h": "99000"},
+                        {"instId": "XAU-USDT-SWAP", "vol24h": "99999999", "askPx": "3000",
+                         "bidPx": "2999", "askSz": "10", "bidSz": "10", "open24h": "2900"},
+                        {"instId": "TRUMP-USDT-SWAP", "vol24h": "99999999", "askPx": "10",
+                         "bidPx": "9.99", "askSz": "2000", "bidSz": "2000", "open24h": "9.8"},
+                    ],
+                }
+
+        old_get = auto_trader_module.requests.get
+        old_universe = auto_trader_module.TRADING_UNIVERSE
+        auto_trader_module.requests.get = lambda *args, **kwargs: FakeResponse()
+        auto_trader_module.TRADING_UNIVERSE = "core"
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.proxies = None
+        try:
+            candidates = trader._candidate_coins()
+        finally:
+            auto_trader_module.requests.get = old_get
+            auto_trader_module.TRADING_UNIVERSE = old_universe
+
+        self.assertEqual([c["symbol"] for c in candidates], ["BTC-USDT-SWAP"])
+
+    def test_trade_logger_records_ai_decisions_and_auto_trades(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        logger = TradeLogger(path)
+        try:
+            logger.log_ai_decision("BTC-USDT-SWAP", "scalp", {
+                "action": "WAIT",
+                "reason": "confidence 70<78",
+                "confidence": 70,
+            })
+            stats = logger.get_ai_decision_stats(hours=24)
+            recent = logger.get_recent_ai_decisions(1)
+
+            self.assertEqual(stats["total"], 1)
+            self.assertEqual(stats["by_mode"]["scalp"]["wait"], 1)
+            self.assertIn("confidence", recent[0][4])
+
+            trade_id = logger.log_auto_trade({
+                "symbol": "BTC-USDT-SWAP",
+                "direction": "long",
+                "entry": 100,
+                "leverage": 3,
+                "stop_loss": 95,
+                "take_profit": 115,
+            }, 2, "order-1")
+            self.assertGreater(trade_id, 0)
+            self.assertEqual(logger.get_today_trades()[0][4], "long")
+        finally:
+            logger.close()
+            os.remove(path)
+
+    def test_execute_logs_successful_ai_auto_trade(self):
+        class FakeOKX:
+            def __init__(self):
+                self.placed = None
+
+            def get_balance(self):
+                return {"equity": 1000}
+
+            def get_positions(self):
+                return []
+
+            def set_leverage(self, symbol, leverage):
+                return True, ""
+
+            def get_instrument_info(self, symbol):
+                return {"ctVal": 1, "minSz": 1, "lotSz": 1}
+
+            def place_order(self, *args, **kwargs):
+                self.placed = (args, kwargs)
+                return True, "ok", "order-1"
+
+        class FakeLiq:
+            def nearest_cluster(self, symbol, entry):
+                return {"below": None, "above": None}
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        logger = TradeLogger(path)
+        trader = AutoTrader.__new__(AutoTrader)
+        trader.okx = FakeOKX()
+        trader.logger = logger
+        trader.risk = RiskManager()
+        trader.safety = AutoTrader.HARD_RULES["safety"]
+        trader.blackout_until = None
+        trader.consecutive_losses = 0
+        trader._last_health = None
+        trader.pending_orders = {}
+        trader.liq_tracker = FakeLiq()
+        trader._risk_gate = lambda d, send: (True, "")
+        trader._microstructure = lambda symbol: {
+            "atr_ratio": 1,
+            "atr_val": 0,
+            "depth_1pct": 100000,
+            "spread": 0,
+            "mid_price": 100,
+            "liquidity_gap": False,
+        }
+        trader._correlation_exposure = lambda positions: {}
+        messages = []
+        decision = {
+            "symbol": "BTC-USDT-SWAP",
+            "direction": "long",
+            "mode": "scalp",
+            "entry": 100,
+            "stop_loss": 95,
+            "take_profit": 115,
+            "leverage": 3,
+            "confidence": 90,
+            "risk_reward": 3,
+            "liq_buffer": 10,
+            "risk_pct": 0.25,
+            "regime": {},
+            "reason": "unit test",
+        }
+        try:
+            ok = trader.execute(decision, messages.append)
+            trades = logger.get_today_trades()
+        finally:
+            logger.close()
+            os.remove(path)
+
+        self.assertTrue(ok)
+        self.assertEqual(trader.okx.placed[0][0], "BTC-USDT-SWAP")
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0][3], "BTC-USDT-SWAP")
+        self.assertIn("order-1", trader.pending_orders)
 
 
 if __name__ == "__main__":
