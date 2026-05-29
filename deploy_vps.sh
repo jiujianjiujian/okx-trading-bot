@@ -19,11 +19,12 @@ fi
 echo "=== 2. 重启机器人 ==="
 ssh ${VPS_USER}@${VPS_HOST} << 'REMOTE'
 cd /root/okx-bot
-pkill -f "python main.py" 2>/dev/null || true
-sleep 2
-nohup ./venv/bin/python main.py > /root/okx-bot/bot.log 2>&1 &
+./venv/bin/pip install -r requirements.txt -q
+./venv/bin/python -m compileall -q .
+systemctl restart okx-bot
 sleep 5
 echo "=== 启动状态 ==="
+systemctl --no-pager --full status okx-bot | tail -12
 grep -E "\[Telegram\]|\[启动\]|ERROR|启动完成|API" /root/okx-bot/bot.log | tail -10
 echo "=== 健康检查 ==="
 curl -s http://127.0.0.1:8000/api/health || echo "API 未响应"

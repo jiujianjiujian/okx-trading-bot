@@ -13,12 +13,29 @@ python3 -m venv venv
 echo "=== 3. 安装 Python 包 ==="
 venv/bin/pip install -r requirements.txt -q
 
-echo "=== 4. 启动服务 ==="
-nohup venv/bin/python main.py > /root/okx-bot/bot.log 2>&1 &
-echo "PID: $!"
+echo "=== 4. 安装 systemd 服务 ==="
+cat > /etc/systemd/system/okx-bot.service <<'SERVICE'
+[Unit]
+Description=OKX Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/okx-bot
+ExecStart=/root/okx-bot/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+systemctl daemon-reload
+systemctl enable okx-bot
+systemctl restart okx-bot
 
 sleep 3
 echo "=== 5. 检查状态 ==="
+systemctl --no-pager --full status okx-bot | tail -12
 cat /root/okx-bot/bot.log
 
 echo ""

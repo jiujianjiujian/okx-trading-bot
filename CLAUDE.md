@@ -27,5 +27,5 @@
 python -m ruff check .
 # 部署
 scp -i ~/.ssh/id_rsa *.py root@43.108.48.96:/root/okx-bot/
-ssh -i ~/.ssh/id_rsa root@43.108.48.96 'cd /root/okx-bot && pkill -f "python main.py"; sleep 2; nohup ./venv/bin/python main.py > bot.log 2>&1 &'
+ssh -i ~/.ssh/id_rsa root@43.108.48.96 'cd /root/okx-bot && git pull --ff-only && ./venv/bin/python -m compileall -q . && systemctl restart okx-bot'
 ```
