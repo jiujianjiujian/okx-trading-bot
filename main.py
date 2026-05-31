@@ -44,6 +44,8 @@ from src.services.scalping_service import ScalpingService
 from src.services.risk_service import RiskService
 from src.services.report_service import ReportService
 from src.services.signal_service import SignalService
+from src.services.optimization_service import OptimizationService
+from src.services.backtest_service import BacktestService
 
 from src.interfaces.notifier_adapters import CompositeNotifier, ConsoleNotifier
 from src.interfaces.telegram_bot import TelegramBot
@@ -101,6 +103,8 @@ def bootstrap():
     scalper = ScalpingService()
     risk = RiskService()
     report = ReportService()
+    optimizer = OptimizationService(deepseek, store, bybit)
+    backtest = BacktestService(bybit)
 
     # 通知层
     notifier = CompositeNotifier([ConsoleNotifier()])
@@ -117,6 +121,7 @@ def bootstrap():
         threecommas=threecommas,
         store=store,
         notifier=notifier,
+        optimizer=optimizer,
     )
 
     # Telegram Bot
@@ -133,6 +138,8 @@ def bootstrap():
     container.register("notifier", lambda: notifier)
     container.register("signal_service", lambda: signal_svc)
     container.register("risk", lambda: risk)
+    container.register("backtest", lambda: backtest)
+    container.register("optimizer", lambda: optimizer)
 
     logger.info(
         "初始化完成 | Bybit %s | 3Commas %s | DeepSeek %s | Telegram %s",

@@ -3,7 +3,7 @@
 import json
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
 
 from ..core.models import (
@@ -22,6 +22,7 @@ from .decision_service import DecisionService
 from .scalping_service import ScalpingService
 from .risk_service import RiskService
 from .report_service import ReportService
+from .optimization_service import OptimizationService
 
 logger = get_logger(__name__)
 
@@ -60,6 +61,7 @@ class SignalService:
         threecommas: ThreeCommasClient,
         store: SignalStore,
         notifier: Notifier,
+        optimizer: Optional[OptimizationService] = None,
     ):
         self._bybit = bybit
         self._market = market
@@ -71,10 +73,15 @@ class SignalService:
         self._tc = threecommas
         self._store = store
         self._notifier = notifier
+        self._optimizer = optimizer
 
         # AI 自主交易状态
         self._running = False
         self._loop_thread: Optional[threading.Thread] = None
+
+        # 定时任务状态
+        self._last_daily_review_date: Optional[datetime] = None
+        self._last_weekly_optimize_date: Optional[datetime] = None
 
     # ── Webhook 信号处理 ──────────────────────────────
 
@@ -162,6 +169,64 @@ class SignalService:
                         self._risk.on_blackswan()
                         self._notifier.send(self._report.blackswan_warning(3.0))
                     last_blackswan_check = now
+
+                # 每日复盘 (UTC 00:05, 即北京时间 08:05)
+                if self._optimizer:
+                    utc_now = datetime.now(timezone.utc)
+                    today_key = utc_now.date()
+                    if (self._last_daily_review_date != today_key
+                            and utc_now.hour == 0 and utc_now.minute < 15):
+                        self._last_daily_review_date = today_key
+                        try:
+                            review = self._optimizer.daily_review()
+                            if review:
+                                stats_data = review.get("stats", {})
+                                net_pnl = stats_data.get("net_pnl_usdt", 0)
+                                target_hit = net_pnl >= DAILY_TARGET_USDT
+                                daily_stats = DailyStats(
+                                    date=str(today_key),
+                                    total_trades=stats_data.get("total_trades", 0),
+                                    wins=stats_data.get("wins", 0),
+                                    losses=stats_data.get("losses", 0),
+                                    win_rate=stats_data.get("win_rate", 0),
+                                    net_pnl_usdt=net_pnl,
+                                    total_fees_usdt=stats_data.get("total_fees_usdt", 0),
+                                    total_pnl_usdt=stats_data.get("total_pnl_usdt", 0),
+                                )
+                                self._notifier.send(self._report.daily_stats(daily_stats))
+                                if target_hit:
+                                    self._notifier.send(self._report.daily_target_reached(daily_stats))
+                                if review.get("suggestions"):
+                                    self._notifier.send(
+                                        f"💡 *优化建议*\n" +
+                                        "\n".join(f"• {s}" for s in review["suggestions"])
+                                    )
+                        except Exception as e:
+                            logger.warning("每日复盘失败: %s", str(e))
+
+                    # 每周优化 (每周一 UTC 01:00)
+                    if (utc_now.weekday() == 0 and utc_now.hour == 1 and utc_now.minute < 15
+                            and self._last_weekly_optimize_date != today_key):
+                        self._last_weekly_optimize_date = today_key
+                        try:
+                            opt = self._optimizer.weekly_optimize()
+                            if opt and opt.get("recommendation"):
+                                self._notifier.send(
+                                    f"📊 *每周策略优化*\n"
+                                    f"{opt.get('recommendation', '')}\n\n"
+                                    f"建议 SL: {opt.get('sl_pct_min', '?')}-{opt.get('sl_pct_max', '?')}%\n"
+                                    f"建议 TP: {opt.get('tp_pct_min', '?')}-{opt.get('tp_pct_max', '?')}%\n"
+                                    f"建议置信度: {opt.get('min_confidence', '?')}"
+                                )
+                                week_stats = opt.get("week_stats", {})
+                                if week_stats:
+                                    self._notifier.send(
+                                        f"本周: {week_stats.get('trades', 0)}笔 | "
+                                        f"胜率 {week_stats.get('win_rate', 0)}% | "
+                                        f"净利 ${week_stats.get('net_pnl', 0):+.2f}"
+                                    )
+                        except Exception as e:
+                            logger.warning("周优化失败: %s", str(e))
 
                 # PnL 同步 (每 2 分钟)
                 if now - last_pnl_sync > 120:

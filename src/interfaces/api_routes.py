@@ -102,6 +102,54 @@ async def api_restart(_admin=ADMIN):
     return {"status": "restarting"}
 
 
+@api_app.get("/api/backtest")
+async def api_backtest(symbol: str = "BTCUSDT", days: int = 7, _admin=ADMIN):
+    """回测指定币种"""
+    bt = container.resolve("backtest")
+    result = bt.run(symbol, interval="5", days=days)
+    return {
+        "symbol": symbol,
+        "days": days,
+        "trades": result.trades,
+        "win_rate": round(result.win_rate, 1),
+        "net_pnl_pct": round(result.net_pnl_pct, 2),
+        "profit_factor": round(result.profit_factor, 1),
+        "max_drawdown_pct": round(result.max_drawdown_pct, 2),
+    }
+
+
+@api_app.get("/api/backtest/all")
+async def api_backtest_all(days: int = 7, _admin=ADMIN):
+    """批量回测所有币种"""
+    from ..infrastructure.config import SCALP_UNIVERSE
+    bt = container.resolve("backtest")
+    results = bt.run_batch(SCALP_UNIVERSE, interval="5", days=days)
+    return {
+        sym: {
+            "trades": r.trades,
+            "win_rate": round(r.win_rate, 1),
+            "net_pnl_pct": round(r.net_pnl_pct, 2),
+        }
+        for sym, r in results.items() if r.trades > 0
+    }
+
+
+@api_app.get("/api/review")
+async def api_review(_admin=ADMIN):
+    """手动触发每日复盘"""
+    opt = container.resolve("optimizer")
+    result = opt.daily_review()
+    return result or {"status": "no_data"}
+
+
+@api_app.get("/api/optimize")
+async def api_optimize(_admin=ADMIN):
+    """手动触发每周优化"""
+    opt = container.resolve("optimizer")
+    result = opt.weekly_optimize()
+    return result or {"status": "not_enough_data"}
+
+
 @api_app.get("/dashboard")
 async def dashboard(_admin=ADMIN):
     """实时仪表盘"""
