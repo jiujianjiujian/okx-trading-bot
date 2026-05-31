@@ -94,6 +94,18 @@ class TelegramBot(Notifier):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(app.initialize())
+                # 注册命令菜单 (聊天框输入 / 时显示)
+                from telegram import BotCommand
+                loop.run_until_complete(app.bot.set_my_commands([
+                    BotCommand("start", "开始使用"),
+                    BotCommand("balance", "查账户余额"),
+                    BotCommand("stats", "今日盈亏统计"),
+                    BotCommand("market", "AI看盘(附币种)"),
+                    BotCommand("risk", "风控状态"),
+                    BotCommand("pause", "暂停AI交易"),
+                    BotCommand("resume", "恢复AI交易"),
+                    BotCommand("help", "帮助"),
+                ]))
                 loop.run_until_complete(app.start())
                 loop.run_until_complete(app.updater.start_polling())
                 loop.run_forever()
