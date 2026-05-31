@@ -74,48 +74,11 @@ class TelegramBot(Notifier):
         if not self._token or not self._chat_id:
             logger.warning("Telegram 未配置, 跳过启动")
             return
-
         self._running = True
-        try:
-            from telegram import Update
-            from telegram.ext import (
-                Application, CommandHandler, ContextTypes,
-            )
-
-            app = Application.builder().token(self._token).build()
-
-            # 注册命令
-            app.add_handler(CommandHandler("start", self._cmd_start))
-            app.add_handler(CommandHandler("help", self._cmd_help))
-            app.add_handler(CommandHandler("balance", self._cmd_balance))
-            app.add_handler(CommandHandler("stats", self._cmd_stats))
-            app.add_handler(CommandHandler("pause", self._cmd_pause))
-            app.add_handler(CommandHandler("resume", self._cmd_resume))
-            app.add_handler(CommandHandler("market", self._cmd_market))
-            app.add_handler(CommandHandler("risk", self._cmd_risk))
-
-            self._app = app
-
-            # 后台线程运行 polling (Linux 需要 stop_signals=None)
-            self._thread = threading.Thread(
-                target=lambda: app.run_polling(stop_signals=None, close_loop=False),
-                daemon=True,
-            )
-            self._thread.start()
-            logger.info("Telegram Bot 已启动")
-        except ImportError:
-            logger.warning("python-telegram-bot 未安装")
+        logger.info("Telegram 通知已就绪 (命令处理通过 Dashboard/API)")
 
     def stop(self):
         self._running = False
-        if self._app:
-            try:
-                import asyncio
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._app.stop())
-                loop.close()
-            except Exception:
-                pass
 
     # ── 命令处理器 ────────────────────────────────────
 
