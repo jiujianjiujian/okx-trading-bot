@@ -271,11 +271,14 @@ class SignalService:
                                     symbol, cluster, sent_directions[cluster])
                         continue
 
-                    # 剥头皮参数
+                    # 剥头皮参数 (含会话自适应)
                     balance = self._bybit.get_account_summary()
                     positions = self._bybit.get_positions()
+                    equity = balance.get("equity", 1000)
+                    session = self._market.current_session()
+                    session_mult = self._market.session_multiplier(session)
                     decision = self._scalper.calculate_parameters(
-                        decision, bundle, balance.get("equity", 1000), len(positions),
+                        decision, bundle, equity * session_mult, len(positions),
                     )
 
                     if decision.is_wait:
@@ -284,6 +287,14 @@ class SignalService:
                     # 风控
                     ok, reason = self._risk.pre_trade_check(decision)
                     if not ok:
+                        continue
+
+                    # 成交量确认
+                    vol_ok, vol_reason = self._market.confirm_volume_quality(
+                        symbol, decision.direction or ""
+                    )
+                    if not vol_ok:
+                        logger.info("%s 成交量未确认: %s", symbol, vol_reason)
                         continue
 
                     # 发送 3Commas

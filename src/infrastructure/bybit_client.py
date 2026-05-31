@@ -79,10 +79,19 @@ class BybitClient:
     # ── 市场数据 ──────────────────────────────────────
 
     def get_ticker(self, symbol: str) -> dict:
-        """24h 行情"""
+        """24h 行情 (单币)"""
         result = self._get("/v5/market/tickers", {"category": "linear", "symbol": symbol})
         items = result.get("list", [])
         return items[0] if items else {}
+
+    def get_tickers_batch(self, symbols: list[str]) -> dict[str, dict]:
+        """24h 行情 (批量, 逗号分隔)"""
+        if not symbols:
+            return {}
+        symbol_str = ",".join(symbols)
+        result = self._get("/v5/market/tickers", {"category": "linear", "symbol": symbol_str})
+        items = result.get("list", [])
+        return {item["symbol"]: item for item in items}
 
     def get_market_price(self, symbol: str) -> float:
         t = self.get_ticker(symbol)

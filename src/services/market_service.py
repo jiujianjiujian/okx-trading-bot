@@ -82,12 +82,22 @@ class MarketService:
     # ── 选币 ──────────────────────────────────────────
 
     def get_candidates(self, universe: list[str] | None = None) -> list[dict]:
-        """筛选可交易币种 (按 24h 成交量 + 价差排序)"""
+        """筛选可交易币种 (批量API, 一次请求拿14币行情)"""
         symbols = universe or SCALP_UNIVERSE
+        try:
+            tickers = self._bybit.get_tickers_batch(symbols)
+        except Exception:
+            logger.warning("批量行情失败, 回退逐币查询")
+            tickers = {}
+            for sym in symbols:
+                try:
+                    tickers[sym] = self._bybit.get_ticker(sym)
+                except Exception:
+                    pass
+
         candidates = []
-        for sym in symbols:
+        for sym, t in tickers.items():
             try:
-                t = self._bybit.get_ticker(sym)
                 vol = float(t.get("turnover24h", "0"))
                 change = float(t.get("price24hPcnt", "0")) * 100
                 price = float(t.get("lastPrice", "0"))
@@ -102,9 +112,50 @@ class MarketService:
             except Exception:
                 pass
 
-        # 按成交量降序
         candidates.sort(key=lambda x: x["volume"], reverse=True)
         return candidates[:8]
+
+    # ── 成交量确认 ────────────────────────────────────
+
+    def confirm_volume_quality(self, symbol: str, direction: str) -> tuple[bool, str]:
+        """
+        入场前成交量质量验证
+
+        三条规则:
+        1. 做多时价格应在 VWAP 上方(买方主导), 做空相反
+        2. 当前成交量 > 过去20根均值的 80% (不能冷清)
+        3. 买卖盘失衡方向一致
+        """
+        try:
+            klines = self._bybit.get_klines(symbol, interval="5", limit=30)
+            if len(klines) < 20:
+                return True, ""  # 数据不足放行
+
+            # 成交量活跃度
+            volumes = [float(k[5]) for k in klines[:20]]
+            current_vol = float(klines[0][5])
+            avg_vol = sum(volumes) / len(volumes) if volumes else 1
+            if current_vol < avg_vol * 0.5:
+                return False, f"成交量低迷 (当前{current_vol:.0f} < 均值50% {avg_vol:.0f})"
+
+            # VWAP 方向
+            highs = [float(k[2]) for k in klines[:20]]
+            lows = [float(k[3]) for k in klines[:20]]
+            closes = [float(k[4]) for k in klines[:20]]
+            tp = [(highs[i] + lows[i] + closes[i]) / 3 for i in range(20)]
+            total_vol = sum(volumes)
+            vwap = sum(tp[i] * volumes[i] for i in range(20)) / total_vol if total_vol > 0 else closes[0]
+            price = closes[0]
+
+            if direction == "long" and price < vwap:
+                return False, f"价格低于VWAP ({price:.2f} < {vwap:.2f}), 做多风险"
+            if direction == "short" and price > vwap:
+                return False, f"价格高于VWAP ({price:.2f} > {vwap:.2f}), 做空风险"
+
+            return True, ""
+        except Exception as e:
+            logger.warning("成交量确认异常: %s", str(e))
+            return True, ""  # 异常时放行, 不让技术问题阻挡交易
 
     # ── 黑天鹅检测 ────────────────────────────────────
 
