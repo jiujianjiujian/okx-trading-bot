@@ -114,16 +114,22 @@ class MarketService:
             klines = self._bybit.get_klines("BTCUSDT", interval="1", limit=10)
             if not klines:
                 return False
-            closes = [float(k[4]) for k in klines]  # Bybit: index 4 = close
-            if len(closes) < 2:
+            # Bybit 返回最新在前: [0]=now, [-1]=10min前
+            newest = float(klines[0][4])
+            oldest = float(klines[-1][4])
+            if oldest <= 0 or newest <= 0:
                 return False
-            change_pct = (closes[-1] - closes[0]) / closes[0] * 100
+            change_pct = (newest - oldest) / oldest * 100
             if change_pct < -3:
                 logger.warning("黑天鹅! BTC 10分钟跌 %.2f%%", abs(change_pct))
                 return True
         except Exception as e:
-            logger.warning("黑天鹅检测失败 (非安全): %s", str(e))
-            return True  # 查询失败时暂停交易, 宁可错过不冒险
+            # 限流/网络错误 → 不触发黑天鹅
+            err = str(e)
+            if "Rate Limit" in err or "10006" in err:
+                return False  # 限流不是黑天鹅
+            logger.warning("黑天鹅检测异常: %s", err)
+            return False  # 网络抖动, 不要误杀
         return False
 
     # ── 交易时段 ──────────────────────────────────────

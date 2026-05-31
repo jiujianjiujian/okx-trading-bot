@@ -163,7 +163,7 @@ class SignalService:
                 now = time.time()
 
                 # 黑天鹅检测 (每 30 秒)
-                if now - last_blackswan_check > 30:
+                if now - last_blackswan_check > 300:
                     if self._market.check_blackswan():
                         self._risk.on_blackswan()
                         self._notifier.send(self._report.blackswan_warning(3.0))
