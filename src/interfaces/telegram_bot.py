@@ -74,16 +74,52 @@ class TelegramBot(Notifier):
             logger.warning("Telegram 未配置, 跳过启动")
             return
         self._running = True
-        logger.info("Telegram 通知已就绪 (命令处理通过 Dashboard/API)")
+
+        def _run_bot():
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                from telegram import Update
+                from telegram.ext import (
+                    Application, CommandHandler,
+                )
+                app = Application.builder().token(self._token).build()
+                app.add_handler(CommandHandler("start", self._cmd_start))
+                app.add_handler(CommandHandler("help", self._cmd_help))
+                app.add_handler(CommandHandler("balance", self._cmd_balance))
+                app.add_handler(CommandHandler("stats", self._cmd_stats))
+                app.add_handler(CommandHandler("pause", self._cmd_pause))
+                app.add_handler(CommandHandler("resume", self._cmd_resume))
+                app.add_handler(CommandHandler("market", self._cmd_market))
+                app.add_handler(CommandHandler("risk", self._cmd_risk))
+                self._app = app
+                loop.run_until_complete(app.run_polling(stop_signals=None, close_loop=False))
+            except Exception as e:
+                logger.warning("Telegram 命令处理器启动失败: %s", str(e))
+            finally:
+                loop.close()
+
+        self._thread = threading.Thread(target=_run_bot, daemon=False)
+        self._thread.start()
+        logger.info("Telegram Bot 已启动 (命令+通知)")
 
     def stop(self):
         self._running = False
+        if self._app:
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._app.stop())
+                loop.close()
+            except Exception:
+                pass
 
     # ── 命令处理器 ────────────────────────────────────
 
     async def _cmd_start(self, update, context):
         await update.message.reply_text(
-            "🤖 *Bybit 剥头皮交易机器人*\n\n"
+            "🤖 *Bybit 剥头皮交易机器人 V6*\n\n"
             "📊 *命令:*\n"
             "/balance — 账户余额\n"
             "/stats — 今日统计\n"
