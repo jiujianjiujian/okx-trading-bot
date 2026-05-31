@@ -33,7 +33,6 @@ def normal_bundle():
         macd_bullish=True,
         atr=200.0,  # ATR ~0.23%
         adx=28.0,
-        close=87000.0,
     )
 
 

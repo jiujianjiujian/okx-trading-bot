@@ -50,7 +50,7 @@ class ScalpingService:
         # ── 用 ATR 自适应 SL 距离 ──
         atr_pct = 0.3  # 默认 0.3%
         if bundle and bundle.atr > 0:
-            entry = decision.entry or bundle.close
+            entry = decision.entry
             if entry > 0:
                 atr_pct = (bundle.atr / entry) * 100
 

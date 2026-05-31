@@ -26,6 +26,25 @@ from .report_service import ReportService
 logger = get_logger(__name__)
 
 
+# ── 相关性集群 (全仓模式防止同向过载) ─────────────────
+
+_CORRELATION_CLUSTERS: dict[str, str] = {
+    # 主流 L1/公链 — BTC 高度相关
+    "BTC": "L1", "ETH": "L1", "BNB": "L1",
+    "SOL": "L1", "XRP": "L1", "ADA": "L1",
+    "AVAX": "L1", "SUI": "L1", "APT": "L1",
+    "INJ": "L1", "LINK": "L1",
+    # Meme — 情绪独立驱动
+    "DOGE": "MEME", "WIF": "MEME", "PEPE": "MEME",
+}
+
+
+def _correlation_cluster(symbol: str) -> str:
+    """返回币种的相关性集群标签"""
+    base = symbol.replace("USDT", "").upper()
+    return _CORRELATION_CLUSTERS.get(base, "OTHER")
+
+
 class SignalService:
     """Webhook 信号处理 + AI 自主交易调度"""
 
@@ -156,9 +175,15 @@ class SignalService:
                     time.sleep(10)
                     continue
 
-                # 选币 + 分析
+                # 选币 + 分析 (14币池, 取前6个按成交量排的)
                 candidates = self._market.get_candidates(SCALP_UNIVERSE)
-                for c in candidates[:3]:  # 只分析前 3 个
+                sent_this_cycle = 0
+                sent_directions: dict[str, str] = {}  # cluster → direction, 防同向重复
+
+                for c in candidates[:6]:
+                    if sent_this_cycle >= 2:  # 每轮最多发2个信号
+                        break
+
                     symbol = c["symbol"]
                     snap = self._market.get_snapshot(symbol)
                     klines = self._bybit.get_klines(symbol, interval="5", limit=100)
@@ -173,6 +198,13 @@ class SignalService:
                     self._store.log_decision(decision, 0)
 
                     if decision.is_wait:
+                        continue
+
+                    # ── 同向相关性过滤 ──
+                    cluster = _correlation_cluster(symbol)
+                    if cluster in sent_directions and sent_directions[cluster] == decision.direction:
+                        logger.info("%s 跳过: 同向 %s 已有 %s",
+                                    symbol, cluster, sent_directions[cluster])
                         continue
 
                     # 剥头皮参数
@@ -196,6 +228,9 @@ class SignalService:
                     if ok:
                         self._risk.on_trade_open(decision)
                         self._notifier.notify_trade_open(decision, 0)
+                        # 记录: 这个方向的这个集群已占一个仓位
+                        sent_directions[cluster] = decision.direction or ""
+                        sent_this_cycle += 1
                         time.sleep(5)  # 之间间隔
 
             except Exception as e:

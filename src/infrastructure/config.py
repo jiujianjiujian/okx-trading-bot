@@ -65,11 +65,12 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "2048"))
 
-# ── 交易品种 (剥头皮精选: 高流动性 + 适中波动 + 低点差) ──
+# ── 交易品种 (14币, 按流动性和波动性分层) ──
 SCALP_UNIVERSE = [
     s.strip() for s in os.getenv(
         "SCALP_UNIVERSE",
-        "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,DOGEUSDT,SUIUSDT,LINKUSDT,AVAXUSDT",
+        "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,LINKUSDT,ADAUSDT,"
+        "AVAXUSDT,DOGEUSDT,SUIUSDT,APTUSDT,INJUSDT,WIFUSDT,PEPEUSDT",
     ).split(",") if s.strip()
 ]
 
