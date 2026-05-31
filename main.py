@@ -155,7 +155,7 @@ def bootstrap():
 
 # ── 应用启动 ──────────────────────────────────────────
 
-components = bootstrap() if __name__ == "__main__" else {}
+components = bootstrap()
 
 
 @asynccontextmanager

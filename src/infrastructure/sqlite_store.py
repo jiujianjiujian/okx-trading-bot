@@ -210,6 +210,9 @@ class SqliteStore(SignalStore):
         total_pnl = sum(r["pnl_usdt"] for r in rows)
         total_fees = sum(r["fee_paid"] for r in rows)
         net_pnl = total_pnl - total_fees
+        best = max(r["pnl_usdt"] for r in rows) if rows else 0.0
+        worst = min(r["pnl_usdt"] for r in rows) if rows else 0.0
+        avg_rr = (total_pnl / total_trades) if total_trades > 0 else 0.0
 
         return {
             "date": today,
@@ -220,6 +223,9 @@ class SqliteStore(SignalStore):
             "total_pnl_usdt": round(total_pnl, 2),
             "total_fees_usdt": round(total_fees, 2),
             "net_pnl_usdt": round(net_pnl, 2),
+            "best_trade": round(best, 2),
+            "worst_trade": round(worst, 2),
+            "avg_rr": round(avg_rr, 2),
             "target_50_usdt": net_pnl >= 50,
         }
 

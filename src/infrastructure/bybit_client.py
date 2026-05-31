@@ -7,7 +7,7 @@ import hmac
 import hashlib
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -144,9 +144,8 @@ class BybitClient:
 
     def get_pnl_records(self, days: int = 1) -> list[dict]:
         """已平仓盈亏记录"""
-        now = datetime.utcnow()
-        start = int((now.replace(hour=0, minute=0, second=0) if days == 1
-                      else now.replace(now.year if days <= 30 else now.year - 1)).timestamp() * 1000)
+        now = datetime.now(timezone.utc)
+        start = int((now - timedelta(days=days)).timestamp() * 1000)
         end = int(now.timestamp() * 1000)
         result = self._get(
             "/v5/position/closed-pnl",
