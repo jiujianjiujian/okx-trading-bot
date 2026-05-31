@@ -125,16 +125,23 @@ class BybitClient:
 
     def get_account_summary(self) -> dict:
         """统一账户余额"""
+        def _safe_float(v) -> float:
+            try:
+                return float(v) if v else 0.0
+            except (ValueError, TypeError):
+                return 0.0
+
         result = self._get("/v5/account/wallet-balance", {"accountType": "UNIFIED"}, signed=True)
         items = result.get("list", [])
         if not items:
             return {"equity": 0, "available": 0, "unrealized_pnl": 0}
         coin_list = items[0].get("coin", [])
         usdt = next((c for c in coin_list if c.get("coin") == "USDT"), coin_list[0] if coin_list else {})
-        equity = float(usdt.get("equity", "0"))
-        available = float(usdt.get("availableToWithdraw", "0"))
-        unrealized = float(usdt.get("unrealisedPnl", "0"))
-        return {"equity": equity, "available": available, "unrealized_pnl": unrealized}
+        return {
+            "equity": _safe_float(usdt.get("equity")),
+            "available": _safe_float(usdt.get("availableToWithdraw")),
+            "unrealized_pnl": _safe_float(usdt.get("unrealisedPnl")),
+        }
 
     def get_positions(self) -> list[dict]:
         """当前持仓"""
