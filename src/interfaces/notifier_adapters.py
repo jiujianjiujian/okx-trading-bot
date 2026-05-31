@@ -2,8 +2,10 @@
 
 from ..core.models import TradeSignal, ScalpDecision, PnLRecord
 from ..services.report_service import ReportService
+from ..infrastructure.logging_ import get_logger
 
 report = ReportService()
+logger = get_logger(__name__)
 
 
 class ConsoleNotifier:
@@ -44,50 +46,50 @@ class CompositeNotifier:
         for n in self._notifiers:
             try:
                 n.send(text, parse_mode)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("通知通道异常: %s", str(e))
 
     def notify_signal(self, signal: TradeSignal) -> None:
         for n in self._notifiers:
             try:
                 n.notify_signal(signal)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("通知通道异常: %s", str(e))
 
     def notify_scalp_decision(self, decision: ScalpDecision) -> None:
         for n in self._notifiers:
             try:
                 n.notify_scalp_decision(decision)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("通知通道异常: %s", str(e))
 
     def notify_trade_open(self, decision: ScalpDecision, signal_id: int) -> None:
         for n in self._notifiers:
             try:
                 n.notify_trade_open(decision, signal_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("通知通道异常: %s", str(e))
 
     def notify_trade_close(self, rec: PnLRecord) -> None:
         for n in self._notifiers:
             try:
                 n.notify_trade_close(rec)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("通知通道异常: %s", str(e))
 
     def notify_error(self, title: str, detail: str) -> None:
         for n in self._notifiers:
             try:
                 n.notify_error(title, detail)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("通知通道异常: %s", str(e))
 
     def notify_daily_stats(self, stats) -> None:
         for n in self._notifiers:
             try:
                 n.notify_daily_stats(stats)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("通知通道异常: %s", str(e))
 
     @property
     def primary(self):

@@ -77,27 +77,32 @@ class TelegramBot(Notifier):
 
         def _run_bot():
             import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            from telegram.ext import Application, CommandHandler
+
+            app = Application.builder().token(self._token).build()
+            app.add_handler(CommandHandler("start", self._cmd_start))
+            app.add_handler(CommandHandler("help", self._cmd_help))
+            app.add_handler(CommandHandler("balance", self._cmd_balance))
+            app.add_handler(CommandHandler("stats", self._cmd_stats))
+            app.add_handler(CommandHandler("pause", self._cmd_pause))
+            app.add_handler(CommandHandler("resume", self._cmd_resume))
+            app.add_handler(CommandHandler("market", self._cmd_market))
+            app.add_handler(CommandHandler("risk", self._cmd_risk))
+            self._app = app
+            # 用 start_polling 而非 run_polling — 避免 Linux 信号处理器冲突
             try:
-                from telegram import Update
-                from telegram.ext import (
-                    Application, CommandHandler,
-                )
-                app = Application.builder().token(self._token).build()
-                app.add_handler(CommandHandler("start", self._cmd_start))
-                app.add_handler(CommandHandler("help", self._cmd_help))
-                app.add_handler(CommandHandler("balance", self._cmd_balance))
-                app.add_handler(CommandHandler("stats", self._cmd_stats))
-                app.add_handler(CommandHandler("pause", self._cmd_pause))
-                app.add_handler(CommandHandler("resume", self._cmd_resume))
-                app.add_handler(CommandHandler("market", self._cmd_market))
-                app.add_handler(CommandHandler("risk", self._cmd_risk))
-                self._app = app
-                loop.run_until_complete(app.run_polling(stop_signals=None, close_loop=False))
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(app.initialize())
+                loop.run_until_complete(app.start())
+                loop.run_until_complete(app.updater.start_polling())
+                loop.run_forever()
             except Exception as e:
-                logger.warning("Telegram 命令处理器启动失败: %s", str(e))
+                logger.error("Telegram 崩溃: %s", str(e), exc_info=True)
             finally:
+                if loop.is_running():
+                    loop.run_until_complete(app.stop())
+                    loop.run_until_complete(app.shutdown())
                 loop.close()
 
         self._thread = threading.Thread(target=_run_bot, daemon=False)

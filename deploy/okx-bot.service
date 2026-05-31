@@ -1,0 +1,17 @@
+[Unit]
+Description=Bybit Scalping Bot V6
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/okx-bot
+ExecStart=/root/okx-bot/venv/bin/python main.py
+ExecStop=/bin/bash -c 'rm -f /root/okx-bot/.bot.lock; pkill -f "python main.py"'
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/okx-bot/bot.log
+StandardError=append:/root/okx-bot/bot.log
+
+[Install]
+WantedBy=multi-user.target
