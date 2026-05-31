@@ -47,12 +47,14 @@ class BybitClient:
     # ── 签名 ──────────────────────────────────────────
 
     def _sign(self, params: dict) -> dict:
-        """HMAC-SHA256 签名"""
+        """HMAC-SHA256 签名 (Bybit API v5)"""
         timestamp = str(int(time.time() * 1000))
-        params_str = f"{timestamp}{RECV_WINDOW}{json.dumps(params, separators=(',', ':'))}"
+        # Bybit v5 signature: timestamp + api_key + recv_window + query_string
+        query = "&".join(f"{k}={v}" for k, v in sorted(params.items())) if params else ""
+        sign_str = f"{timestamp}{BYBIT_API_KEY}{RECV_WINDOW}{query}"
         signature = hmac.new(
             BYBIT_SECRET_KEY.encode("utf-8"),
-            params_str.encode("utf-8"),
+            sign_str.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
         return {
