@@ -66,9 +66,12 @@ class BybitClient:
 
     def _get(self, path: str, params: dict | None = None, signed: bool = False) -> dict:
         headers = {"Content-Type": "application/json"}
+        params = params or {}
+        query = "&".join(f"{k}={v}" for k, v in sorted(params.items())) if params else ""
         if signed and BYBIT_API_KEY:
-            headers.update(self._sign(params or {}))
-        r = self._client.get(path, params=params or {}, headers=headers)
+            headers.update(self._sign(params))
+        url = f"{path}?{query}" if query else path
+        r = self._client.get(url, headers=headers)
         r.raise_for_status()
         data = r.json()
         if data.get("retCode") != 0:
