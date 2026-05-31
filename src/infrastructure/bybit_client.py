@@ -53,7 +53,7 @@ class BybitClient:
         signature = hmac.new(
             BYBIT_SECRET_KEY.encode("utf-8"),
             params_str.encode("utf-8"),
-            hashlib.SHA256,
+            hashlib.sha256,
         ).hexdigest()
         return {
             "X-BAPI-API-KEY": BYBIT_API_KEY,

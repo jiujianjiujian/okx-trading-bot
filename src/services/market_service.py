@@ -115,7 +115,7 @@ class MarketService:
             klines = self._bybit.get_klines("BTCUSDT", interval="1", limit=10)
             if not klines:
                 return False
-            closes = [float(k["close"]) for k in klines]
+            closes = [float(k[4]) for k in klines]  # Bybit: index 4 = close
             if len(closes) < 2:
                 return False
             change_pct = (closes[-1] - closes[0]) / closes[0] * 100
