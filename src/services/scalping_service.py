@@ -8,7 +8,7 @@ from ..core.models import ScalpDecision, IndicatorBundle
 from ..infrastructure.config import (
     ESTIMATED_FEE_PCT, SCALP_SL_PCT_MIN, SCALP_SL_PCT_MAX,
     SCALP_TP_PCT_MIN, SCALP_TP_PCT_MAX, MIN_NET_RR,
-    MAX_LOSS_PER_TRADE_USDT, DAILY_TARGET_USDT, MAX_POSITIONS,
+    MAX_LOSS_PER_TRADE_USDT, MAX_POSITIONS,
     FEE_TAKER_PCT, FEE_MAKER_PCT,
 )
 from ..infrastructure.logging_ import get_logger

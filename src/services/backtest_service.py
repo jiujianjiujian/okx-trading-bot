@@ -4,7 +4,6 @@
 不需要 AI API, 用技术指标规则模拟决策。
 """
 
-from datetime import datetime, timezone
 from typing import Optional
 
 from ..core.models import IndicatorBundle
@@ -130,7 +129,6 @@ class BacktestService:
                 # 检查止盈止损
                 high = float(next_bar["high"])
                 low = float(next_bar["low"])
-                close = float(next_bar["close"])
 
                 if direction == "long":
                     if high >= position_tp:

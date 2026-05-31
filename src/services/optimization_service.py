@@ -4,11 +4,9 @@
 不自动修改配置文件, 而是输出建议 → Telegram 通知 → 用户确认。
 """
 
-import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from ..core.models import DailyStats, PnLRecord
 from ..infrastructure.deepseek_client import DeepSeekClient
 from ..infrastructure.bybit_client import BybitClient
 from ..infrastructure.logging_ import get_logger
@@ -168,7 +166,7 @@ class OptimizationService:
         total_fees = sum(t.get("fee_paid", 0) for t in week_trades)
 
         # 按 SL/TP 分组分析 (从 decisions 表获取)
-        decisions = self._store.get_recent_decisions(limit=500)
+        self._store.get_recent_decisions(limit=500)
 
         weekly_data = (
             f"本周交易: {total}笔 | 胜率: {wins/total*100:.0f}% | "

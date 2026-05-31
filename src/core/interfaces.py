@@ -1,6 +1,6 @@
 """核心接口协议 — Notifier, SignalStore, MarketDataProvider"""
 
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 from .models import TradeSignal, ScalpDecision, PnLRecord
 
 

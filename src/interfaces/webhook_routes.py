@@ -4,7 +4,6 @@ import hmac
 
 from fastapi import FastAPI, Request, HTTPException, Depends
 
-from ..core.models import TradeSignal
 from ..infrastructure.config import WEBHOOK_SECRET, ADMIN_API_TOKEN
 from ..shared.di import container
 

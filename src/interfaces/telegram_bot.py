@@ -1,12 +1,11 @@
 """Telegram Bot — 通知 + 命令处理"""
 
 import threading
-import time
 from typing import Optional
 
 from ..core.models import TradeSignal, ScalpDecision, PnLRecord, DailyStats
 from ..core.interfaces import Notifier
-from ..infrastructure.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_PROXY
+from ..infrastructure.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from ..infrastructure.bybit_client import BybitClient
 from ..infrastructure.logging_ import get_logger
 from ..services.report_service import ReportService
@@ -134,13 +133,6 @@ class TelegramBot(Notifier):
             symbol = context.args[0].upper()
             if not symbol.endswith("USDT"):
                 symbol += "USDT"
-        try:
-            from src.services.market_service import MarketService
-            from src.services.analysis_service import AnalysisService
-            from src.services.decision_service import DecisionService
-        except ImportError:
-            pass
-
         try:
             ticker = self._bybit.get_ticker(symbol)
             price = float(ticker.get("lastPrice", "0"))

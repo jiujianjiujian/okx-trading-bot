@@ -1,7 +1,6 @@
 """市场数据聚合服务 — 整合 Bybit 行情 + K线 + 盘口 + 费率"""
 
 from datetime import datetime, timezone
-from typing import Optional
 
 from ..core.models import MarketSnapshot, KlineFrame
 from ..core.enums import SessionType

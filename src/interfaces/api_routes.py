@@ -6,7 +6,6 @@ from fastapi import FastAPI, Depends
 from fastapi.responses import HTMLResponse
 
 from ..shared.di import container
-from ..infrastructure.config import ADMIN_API_TOKEN, WEBHOOK_SECRET
 from .webhook_routes import require_admin
 
 api_app = FastAPI(title="Bybit Scalping Bot - API")

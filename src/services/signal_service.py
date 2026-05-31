@@ -1,19 +1,18 @@
 """信号处理服务 — Webhook → 分析 → 3Commas → 日志"""
 
-import json
 import threading
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from ..core.models import (
-    TradeSignal, MarketSnapshot, ScalpDecision, PnLRecord, DailyStats,
+    TradeSignal, ScalpDecision, PnLRecord, DailyStats,
 )
 from ..core.interfaces import Notifier, SignalStore
 from ..infrastructure.bybit_client import BybitClient
 from ..infrastructure.threecommas_client import ThreeCommasClient
 from ..infrastructure.config import (
-    DAILY_TARGET_USDT, AI_AUTO_START, SCALP_UNIVERSE,
+    DAILY_TARGET_USDT, SCALP_UNIVERSE,
 )
 from ..infrastructure.logging_ import get_logger
 from .market_service import MarketService
@@ -198,7 +197,7 @@ class SignalService:
                                     self._notifier.send(self._report.daily_target_reached(daily_stats))
                                 if review.get("suggestions"):
                                     self._notifier.send(
-                                        f"💡 *优化建议*\n" +
+                                        "💡 *优化建议*\n" +
                                         "\n".join(f"• {s}" for s in review["suggestions"])
                                     )
                         except Exception as e:

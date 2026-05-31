@@ -3,9 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
-from decimal import Decimal
 
-from .enums import Direction, ScalpMode, SignalStatus
 
 
 # ── 交易信号 ──────────────────────────────────────────

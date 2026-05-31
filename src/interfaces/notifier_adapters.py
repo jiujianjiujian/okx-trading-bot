@@ -1,7 +1,6 @@
 """通知适配器 — CompositeNotifier + ConsoleNotifier"""
 
 from ..core.models import TradeSignal, ScalpDecision, PnLRecord
-from ..core.interfaces import Notifier
 from ..services.report_service import ReportService
 
 report = ReportService()

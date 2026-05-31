@@ -5,13 +5,10 @@
 最终: 方向一致 → 通过, 不一致 → WAIT
 """
 
-import json
-from typing import Optional
 
 from ..core.models import MarketSnapshot, ScalpDecision, IndicatorBundle
-from ..core.enums import ScalpMode, Direction
 from ..infrastructure.deepseek_client import DeepSeekClient
-from ..infrastructure.config import DEEPSEEK_API_KEY, MIN_AI_CONFIDENCE
+from ..infrastructure.config import MIN_AI_CONFIDENCE
 from ..infrastructure.logging_ import get_logger
 from .analysis_service import AnalysisService
 

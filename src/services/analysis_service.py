@@ -193,7 +193,7 @@ class AnalysisService:
             c = candles[i]
             body = abs(float(c["close"]) - float(c["open"]))
             upper = float(c["high"]) - max(float(c["open"]), float(c["close"]))
-            lower = min(float(c["open"]), float(c["close"])) - float(c["low"])
+            min(float(c["open"]), float(c["close"])) - float(c["low"])
             total = float(c["high"]) - float(c["low"])
             body_ratio = body / total if total > 0 else 0
             is_bullish = float(c["close"]) > float(c["open"])
@@ -285,7 +285,7 @@ class AnalysisService:
             return 50.0
 
         scores = []
-        for tf, b in bundles.items():
+        for _tf, b in bundles.items():
             tf_score = 50.0
             # 趋势方向一致
             if direction == "long":
