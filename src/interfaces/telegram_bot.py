@@ -96,8 +96,11 @@ class TelegramBot(Notifier):
 
             self._app = app
 
-            # 后台线程运行 polling
-            self._thread = threading.Thread(target=lambda: app.run_polling(), daemon=True)
+            # 后台线程运行 polling (Linux 需要 stop_signals=None)
+            self._thread = threading.Thread(
+                target=lambda: app.run_polling(stop_signals=None, close_loop=False),
+                daemon=True,
+            )
             self._thread.start()
             logger.info("Telegram Bot 已启动")
         except ImportError:
@@ -106,7 +109,13 @@ class TelegramBot(Notifier):
     def stop(self):
         self._running = False
         if self._app:
-            self._app.stop()
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._app.stop())
+                loop.close()
+            except Exception:
+                pass
 
     # ── 命令处理器 ────────────────────────────────────
 
