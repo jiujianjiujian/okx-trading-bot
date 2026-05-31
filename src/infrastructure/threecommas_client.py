@@ -1,38 +1,52 @@
 """3Commas Signal Bot Webhook 发送器
 
-向 3Commas 发送交易信号，由 3Commas 在 Bybit 上执行。
-支持自定义信号，控制追踪止盈/追踪止损参数。
+向 3Commas DCA Bot 发送 TradingView 格式的 Webhook 信号。
+3Commas 在 Bybit 上以限价单执行，按保证金百分比控制仓位。
 
-参考: https://github.com/3commas-io/3commas-official-api-docs
+信号格式 (TradingView → 3Commas):
+  - 多头: action=enter_long, limit buy
+  - 空头: action=enter_short, limit sell
+  - 平仓: action=exit (由 3Commas 自带 TP/SL 管理)
 """
 
-import json
-import hashlib
-import hmac
 import time
 
 import httpx
 
 from .config import (
-    THREECOMMAS_BOT_ID,
-    THREECOMMAS_EMAIL_TOKEN,
+    THREECOMMAS_SECRET,
+    THREECOMMAS_BOT_UUID,
+    THREECOMMAS_WEBHOOK_URL,
+    THREECOMMAS_EXCHANGE,
     PROXY_URL,
+    BYBIT_DEMO,
 )
 from .logging_ import get_logger
 from ..core.models import ScalpDecision
 
 logger = get_logger(__name__)
 
-# 3Commas Signal Futures Webhook URL
-SIGNAL_URL = "https://3commas.io/signals/futures/webhook"
+# 默认保证金百分比范围
+MARGIN_PCT_MIN = 1.0   # 最低 1%
+MARGIN_PCT_MAX = 15.0  # 最高 15%
+MAX_LAG_SECONDS = 300   # 信号最大延迟
 
 
 class ThreeCommasClient:
-    """3Commas 信号发送客户端"""
+    """3Commas TradingView Webhook 信号发送器
+
+    使用 3Commas DCA Bot 原生 Webhook 格式:
+    - JWT secret 认证
+    - limit order + margin_percent
+    - 支持 enter_long / enter_short / exit
+    """
 
     def __init__(self):
-        self._bot_id = THREECOMMAS_BOT_ID
-        self._email_token = THREECOMMAS_EMAIL_TOKEN
+        self._secret = THREECOMMAS_SECRET
+        self._bot_uuid = THREECOMMAS_BOT_UUID
+        self._webhook_url = THREECOMMAS_WEBHOOK_URL
+        self._exchange = "Bybit" if not BYBIT_DEMO else "Bybit"
+
         limits = httpx.Limits(max_keepalive_connections=3, max_connections=5)
         transport_kwargs = {}
         if PROXY_URL:
@@ -48,138 +62,125 @@ class ThreeCommasClient:
 
     @property
     def configured(self) -> bool:
-        return bool(self._bot_id and self._email_token)
+        return bool(self._secret and self._bot_uuid and self._webhook_url)
+
+    # ── 主接口 ──────────────────────────────────────────
 
     def send_signal(self, decision: ScalpDecision) -> tuple[bool, str]:
         """
-        发送交易信号到 3Commas Signal Bot
+        发送剥头皮决策到 3Commas
 
-        3Commas Futures Signal Bot 格式:
-        {
-          "message_type": "bot",
-          "bot_id": 12345,
-          "email_token": "xxx",
-          "delay_seconds": 0,
-          "pair": "USDT_BTC"
-        }
+        Args:
+            decision: 包含完整 SL/TP/仓位参数的 ScalpDecision
 
-        返回: (成功, 消息)
+        Returns:
+            (成功, 消息)
         """
         if not self.configured:
-            return False, "3Commas 未配置 (THREECOMMAS_BOT_ID / THREECOMMAS_EMAIL_TOKEN)"
+            return False, "3Commas 未配置 (THREECOMMAS_SECRET / BOT_UUID / WEBHOOK_URL)"
 
-        # 3Commas pair 格式: USDT_BTC (不是 BTCUSDT)
-        pair = f"USDT_{decision.symbol.replace('USDT', '')}"
+        # 计算保证金百分比
+        margin_pct = self._calc_margin_pct(decision)
 
-        payload = {
-            "message_type": "bot",
-            "bot_id": self._bot_id,
-            "email_token": self._email_token,
-            "delay_seconds": 0,
-            "pair": pair,
-        }
-
-        # 附注: 通过 comment 传递完整交易参数
-        comment = (
-            f"direction={decision.direction} "
-            f"entry={decision.entry:.2f} "
-            f"sl={decision.stop_loss:.4f} "
-            f"tp={decision.take_profit:.4f} "
-            f"sl%={decision.sl_pct:.2f}% "
-            f"tp%={decision.tp_pct:.2f}% "
-            f"rr={decision.net_risk_reward:.1f} "
-            f"conf={decision.confidence} "
-            f"lev=10x 逐仓 "
-            f"strat={decision.scalping_strategy} "
-            f"fee={decision.fee_cost:.3f}%"
-        )
-        payload["comment"] = comment[:500]
+        # 构建 TradingView Webhook 信号
+        payload = self._build_payload(decision, margin_pct)
 
         try:
             resp = self._client.post(
-                SIGNAL_URL,
+                self._webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
             )
             if resp.status_code in (200, 201, 202):
                 logger.info(
-                    "3Commas 信号已发送: %s %s | 入场 %.2f | TP %.4f SL %.4f | RR %.1f",
-                    decision.symbol, decision.direction,
-                    decision.entry, decision.take_profit, decision.stop_loss,
-                    decision.net_risk_reward,
+                    "3Commas 已发送: %s %s | 入场 %.4f (限价) | "
+                    "SL %.2f%% TP %.2f%% | 保证金 %.1f%% | RR %.1f",
+                    decision.symbol,
+                    "多" if decision.direction == "long" else "空",
+                    decision.entry,
+                    decision.sl_pct, decision.tp_pct,
+                    margin_pct, decision.net_risk_reward,
                 )
-                return True, f"信号已发送 (HTTP {resp.status_code})"
+                return True, f"已发送 ({decision.direction} {decision.symbol})"
             else:
-                logger.error("3Commas 返回错误: %s %s", resp.status_code, resp.text[:300])
-                return False, f"3Commas HTTP {resp.status_code}: {resp.text[:200]}"
+                logger.error("3Commas HTTP %s: %s", resp.status_code, resp.text[:300])
+                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
         except Exception as e:
-            logger.error("3Commas 请求异常: %s", str(e))
+            logger.error("3Commas 连接失败: %s", str(e))
             return False, str(e)
 
-    def send_exit_signal(self, symbol: str) -> tuple[bool, str]:
+    def send_close(self, symbol: str) -> tuple[bool, str]:
         """发送平仓信号"""
         if not self.configured:
             return False, "3Commas 未配置"
 
-        pair = f"USDT_{symbol.replace('USDT', '')}"
         payload = {
-            "message_type": "bot",
-            "bot_id": self._bot_id,
-            "email_token": self._email_token,
-            "delay_seconds": 0,
-            "pair": pair,
-            "action": "close",
+            "secret": self._secret,
+            "max_lag": str(MAX_LAG_SECONDS),
+            "timestamp": str(int(time.time() * 1000)),
+            "tv_exchange": self._exchange,
+            "tv_instrument": symbol,
+            "action": "exit",
+            "bot_uuid": self._bot_uuid,
         }
 
         try:
-            resp = self._client.post(SIGNAL_URL, json=payload, headers={"Content-Type": "application/json"})
+            resp = self._client.post(
+                self._webhook_url, json=payload,
+                headers={"Content-Type": "application/json"},
+            )
             ok = resp.status_code in (200, 201, 202)
-            return ok, f"HTTP {resp.status_code}" if ok else f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return ok, f"HTTP {resp.status_code}"
         except Exception as e:
             return False, str(e)
 
-    def send_smart_trade(self, decision: ScalpDecision, account_id: int,
-                         api_key: str, api_secret: str) -> tuple[bool, str]:
-        """
-        通过 3Commas Smart Trade API 创建带追踪止盈/止损的智能交易
+    # ── 内部 ────────────────────────────────────────────
 
-        需要 3Commas API Key, 而非 Signal Bot Token。
-        POST /public/api/ver1/smart_trades_v2
-        """
-        pair = f"USDT_{decision.symbol.replace('USDT', '')}"
-        order_type = "buy" if decision.direction == "long" else "sell"
-        position_size = max(decision.position_size, 50)  # min $50
+    def _build_payload(self, d: ScalpDecision, margin_pct: float) -> dict:
+        """构建 TradingView 信号 JSON"""
+        now_ms = str(int(time.time() * 1000))
+        # 限价单入场价 — 使用决策中的 entry 价格
+        limit_price = f"{d.entry:.4f}"
 
-        body = {
-            "account_id": account_id,
-            "pair": pair,
-            "position": {
-                "type": order_type,
-                "units": {"value": str(position_size), "type": "quote"},
-                "order_type": "market",
-                "take_profit": {
-                    "enabled": True,
-                    "profit_price": decision.tp_pct,
-                    "trailing": {"enabled": False, "deviation": 0},
-                },
-                "stop_loss": {
-                    "enabled": True,
-                    "loss_price": decision.sl_pct,
-                    "trailing": {"enabled": True, "deviation": 0.1},
-                },
+        return {
+            "secret": self._secret,
+            "max_lag": str(MAX_LAG_SECONDS),
+            "timestamp": now_ms,
+            "trigger_price": f"{d.entry:.4f}",
+            "tv_exchange": self._exchange,
+            "tv_instrument": d.symbol,
+            "action": "enter_long" if d.direction == "long" else "enter_short",
+            "bot_uuid": self._bot_uuid,
+            "order": {
+                "amount": f"{margin_pct:.1f}",
+                "currency_type": "margin_percent",
+                "order_type": "limit",
+                "price": limit_price,
             },
         }
 
-        url = "https://api.3commas.io/public/api/ver1/smart_trades_v2"
-        try:
-            resp = self._client.post(url, json=body, headers={
-                "APIKEY": api_key,
-                "Signature": hmac.new(
-                    api_secret.encode(), url.encode(), hashlib.SHA256,
-                ).hexdigest(),
-                "Content-Type": "application/json",
-            })
-            ok = resp.status_code in (200, 201)
-            return ok, resp.text[:300]
-        except Exception as e:
-            return False, str(e)
+    def _calc_margin_pct(self, d: ScalpDecision) -> float:
+        """根据风险和账户计算合理的保证金百分比
+
+        保证金百分比 = 所需保证金 / 可用余额 × 100
+
+        原则:
+        - 置信度越高 → 保证金越接近 MARGIN_PCT_MAX
+        - 置信度越低 → 保证金越接近 MARGIN_PCT_MIN
+        - 符合单笔最大亏损限制
+        """
+        # 基于置信度线性插值
+        conf_ratio = max(0, min(1, d.confidence / 100.0))
+        margin_pct = MARGIN_PCT_MIN + (MARGIN_PCT_MAX - MARGIN_PCT_MIN) * conf_ratio
+
+        # 如果已计算仓位大小，用它反推保证金百分比
+        if d.position_size > 0:
+            # 10x 杠杆: position_size = margin × 10
+            # margin_pct = (position_size / 10) / total_equity × 100
+            # 用 position_size 反推一个合理的百分比
+            estimated_equity = max(500, d.position_size * 2)  # 保守估计
+            derived_pct = (d.position_size / 10) / estimated_equity * 100
+            # 在范围内取合理值
+            margin_pct = max(MARGIN_PCT_MIN, min(MARGIN_PCT_MAX, derived_pct))
+
+        return round(margin_pct, 1)
