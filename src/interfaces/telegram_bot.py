@@ -78,6 +78,7 @@ class TelegramBot(Notifier):
         def _run_bot():
             import asyncio
             from telegram.ext import Application, CommandHandler
+            from telegram import BotCommand
 
             app = Application.builder().token(self._token).build()
             app.add_handler(CommandHandler("start", self._cmd_start))
@@ -95,7 +96,6 @@ class TelegramBot(Notifier):
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(app.initialize())
                 # 注册命令菜单 (聊天框输入 / 时显示)
-                from telegram import BotCommand
                 loop.run_until_complete(app.bot.set_my_commands([
                     BotCommand("start", "开始使用"),
                     BotCommand("balance", "查账户余额"),

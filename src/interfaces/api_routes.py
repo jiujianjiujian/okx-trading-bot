@@ -24,12 +24,68 @@ def _get_signal():
 
 @api_app.get("/api/health")
 async def health():
-    """健康检查"""
+    """健康检查 — 验证所有核心服务"""
+    ok_count = 0
+    fail_count = 0
+    checks = {}
+
+    # Bybit API
+    try:
+        bybit = _get_bybit()
+        bybit.get_ticker("BTCUSDT")
+        checks["bybit"] = "ok"
+        ok_count += 1
+    except Exception as e:
+        checks["bybit"] = str(e)[:100]
+        fail_count += 1
+
+    # 3Commas
+    from ..infrastructure.threecommas_client import ThreeCommasClient
+    tc = ThreeCommasClient()
+    checks["3commas"] = "configured" if tc.configured else "not_configured"
+    if tc.configured:
+        ok_count += 1
+
+    # Store
+    try:
+        store = _get_store()
+        store.get_today_pnl()
+        checks["store"] = "ok"
+        ok_count += 1
+    except Exception as e:
+        checks["store"] = str(e)[:100]
+        fail_count += 1
+
     return {
-        "status": "ok",
+        "status": "ok" if fail_count == 0 else "degraded",
         "time": datetime.now().isoformat(),
-        "version": "6.0.0",
+        "version": "6.1.0",
+        "checks": checks,
+        "ok": ok_count,
+        "fail": fail_count,
     }
+
+
+@api_app.get("/api/close")
+async def api_close(symbol: str, _admin=ADMIN):
+    """紧急平仓 — 通过 3Commas 发送平仓信号"""
+    symbol = symbol.upper()
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+    from ..infrastructure.threecommas_client import ThreeCommasClient
+    tc = ThreeCommasClient()
+    ok, msg = tc.send_close(symbol)
+    if ok:
+        bybit = _get_bybit()
+        try:
+            positions = bybit.get_positions()
+            for p in positions:
+                if p.get("symbol", "") == symbol:
+                    return {"status": "close_sent", "position_exists": True, "detail": msg}
+            return {"status": "close_sent", "position_exists": False, "detail": "3Commas信号已发送,Bybit无持仓"}
+        except Exception:
+            return {"status": "close_sent", "detail": msg}
+    return {"status": "error", "detail": msg}
 
 
 @api_app.get("/api/balance")
