@@ -13,3 +13,7 @@ paul_wei_data/
 .backtest/
 *.db
 *.log
+.git_old/
+.bot.lock
+.okx_bot.lock
+logs/
