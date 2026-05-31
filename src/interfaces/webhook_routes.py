@@ -53,14 +53,14 @@ async def webhook(request: Request):
     """
     # 验证密钥
     secret = request.headers.get("X-Webhook-Secret", "")
-    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+    if WEBHOOK_SECRET and not hmac.compare_digest(secret, WEBHOOK_SECRET):
         raise HTTPException(403, "Webhook 密钥错误")
 
     body = await request.body()
     body_str = body.decode("utf-8")
 
     # 解析信号
-    from signal_parser import parse_tv_webhook
+    from ..services.signal_parser import parse_tv_webhook
     signal = parse_tv_webhook(body_str)
     if signal is None:
         raise HTTPException(400, "无法解析信号, 检查 JSON 格式")
@@ -82,7 +82,7 @@ async def webhook(request: Request):
 @webhook_app.get("/webhook/test")
 async def webhook_test(_admin=ADMIN):
     """发送测试信号"""
-    from signal_parser import TradeSignal as TVSignal
+    from ..services.signal_parser import TradeSignal as TVSignal
 
     test = TVSignal(
         symbol="BTCUSDT",

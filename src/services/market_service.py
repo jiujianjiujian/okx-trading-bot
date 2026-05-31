@@ -122,8 +122,9 @@ class MarketService:
             if change_pct < -3:
                 logger.warning("黑天鹅! BTC 10分钟跌 %.2f%%", abs(change_pct))
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("黑天鹅检测失败 (非安全): %s", str(e))
+            return True  # 查询失败时暂停交易, 宁可错过不冒险
         return False
 
     # ── 交易时段 ──────────────────────────────────────
@@ -132,18 +133,17 @@ class MarketService:
     def current_session() -> SessionType:
         """UTC 时间判定交易时段"""
         now = datetime.now(timezone.utc)
-        h = now.hour
-        # 北京时间 = UTC+8
-        beijing_h = (h + 8) % 24
-        if 8 <= beijing_h < 16:
-            return SessionType.ASIA
-        elif 15 <= beijing_h < 23:
-            return SessionType.EU
-        elif 20 <= beijing_h < 24 or beijing_h < 4:
-            return SessionType.OVERLAP if 20 <= beijing_h < 23 else SessionType.US
-        elif now.weekday() >= 5:
+        beijing_h = (now.hour + 8) % 24
+        if now.weekday() >= 5:
             return SessionType.WEEKEND
-        return SessionType.ASIA
+        if 20 <= beijing_h < 23:
+            return SessionType.OVERLAP   # 欧美重叠 先判断
+        elif 15 <= beijing_h < 20:
+            return SessionType.EU
+        elif 8 <= beijing_h < 15:
+            return SessionType.ASIA
+        else:
+            return SessionType.US  # 23:00-08:00 北京
 
     @staticmethod
     def session_multiplier(session: SessionType) -> float:

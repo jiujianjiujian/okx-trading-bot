@@ -143,7 +143,8 @@ class ScalpingService:
         """
         计算盈亏平衡所需的最小 TP 距离
 
-        盈亏平衡: tp% = sl% + 2 × fee%
+        双向手续费: tp% = sl% + 2 × fee% (入场+出场)
+        例: sl=0.30%, fee=0.11% → tp=0.52%
         """
         fee = fee_pct if fee_pct is not None else ESTIMATED_FEE_PCT
-        return sl_pct + fee
+        return sl_pct + 2 * fee

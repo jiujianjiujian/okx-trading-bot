@@ -55,8 +55,8 @@ class TestScalpingParameters:
 
     def test_min_tp_for_breakeven(self, scalper):
         min_tp = scalper.min_tp_for_breakeven(0.3)
-        # 盈亏平衡: tp% = sl% + 2×fee% = 0.3 + 0.11 = 0.41
-        assert min_tp == pytest.approx(0.41, 0.01)
+        # 盈亏平衡: tp% = sl% + 2×fee% = 0.3 + 0.22 = 0.52
+        assert min_tp == pytest.approx(0.52, 0.01)
 
     def test_low_confidence_decision(self, scalper):
         """低置信度决定不应通过 (由 risk_service 处理)"""

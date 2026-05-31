@@ -224,14 +224,13 @@ class SignalService:
 
                     # 发送 3Commas
                     self._notifier.notify_scalp_decision(decision)
-                    ok, msg = self._tc.send_signal(decision)
+                    ok, _ = self._tc.send_signal(decision)
                     if ok:
                         self._risk.on_trade_open(decision)
                         self._notifier.notify_trade_open(decision, 0)
-                        # 记录: 这个方向的这个集群已占一个仓位
                         sent_directions[cluster] = decision.direction or ""
                         sent_this_cycle += 1
-                        time.sleep(5)  # 之间间隔
+                        time.sleep(5)
 
             except Exception as e:
                 logger.error("主循环异常: %s", str(e))
@@ -244,18 +243,24 @@ class SignalService:
         """同步 Bybit 已平仓 PnL 到本地数据库"""
         try:
             records = self._bybit.get_pnl_records(days=1)
+            # 用 set 去重 (order_id 唯一)
+            synced_ids = self._store.get_synced_order_ids() if hasattr(self._store, 'get_synced_order_ids') else set()
+
             for r in records:
+                order_id = r.get("orderId", "")
                 pnl = float(r.get("closedPnl", "0"))
                 symbol = r.get("symbol", "")
-                if pnl == 0:
+                if pnl == 0 or order_id in synced_ids:
                     continue
                 rec = PnLRecord(
                     symbol=symbol,
                     pnl_usdt=pnl,
                     time=datetime.now(timezone.utc),
                     closed_by="bybit_sync",
+                    signal_id=0,
                 )
                 self._store.log_pnl(rec)
+                synced_ids.add(order_id)
                 self._risk.on_trade_close(symbol, pnl)
 
             # 检查目标

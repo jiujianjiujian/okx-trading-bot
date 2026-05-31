@@ -99,8 +99,11 @@ class SqliteStore(SignalStore):
             pnl_usdt REAL DEFAULT 0,
             pnl_pct REAL DEFAULT 0,
             closed_by TEXT DEFAULT '',
-            signal_id INTEGER DEFAULT 0
+            signal_id INTEGER DEFAULT 0,
+            order_id TEXT DEFAULT ''
         )""")
+        # 唯一索引 — 防 PnL 同步重复
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_order_id ON pnl_records(order_id) WHERE order_id != ''")
 
         c.connection.commit()
 
@@ -153,16 +156,18 @@ class SqliteStore(SignalStore):
 
     def log_pnl(self, record: PnLRecord) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        order_id = getattr(record, 'order_id', '')
         with self._lock:
             c = self.conn.cursor()
             c.execute(
-                """INSERT INTO pnl_records (
+                """INSERT OR IGNORE INTO pnl_records (
                     time, symbol, direction, entry, exit_price, position_size,
-                    fee_paid, pnl_usdt, pnl_pct, closed_by, signal_id
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    fee_paid, pnl_usdt, pnl_pct, closed_by, signal_id, order_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (now, record.symbol, record.direction, record.entry,
                  record.exit_price, record.position_size, record.fee_paid,
-                 record.pnl_usdt, record.pnl_pct, record.closed_by, record.signal_id),
+                 record.pnl_usdt, record.pnl_pct, record.closed_by,
+                 record.signal_id, order_id),
             )
             c.connection.commit()
 

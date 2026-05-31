@@ -218,10 +218,6 @@ class DecisionService:
             score += 10
         if bundle.vol_expansion:
             score += 10
-        if bundle.bid_ask_imbalance > 0.1 and direction == "long":
-            score += 5
-        if bundle.bid_ask_imbalance < -0.1 and direction == "short":
-            score += 5
 
         confidence = min(abs(score), 80)
         if score >= 30:

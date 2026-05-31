@@ -168,6 +168,7 @@ class PnLRecord:
     pnl_pct: float = 0.0
     closed_by: str = ""            # "tp" / "sl" / "manual"
     signal_id: Optional[int] = None
+    order_id: str = ""             # Bybit 订单 ID, 用于去重
 
 
 @dataclass

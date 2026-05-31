@@ -135,13 +135,24 @@ class AnalysisService:
     ) -> dict:
         """SuperTrend 趋势指标"""
         atr_val = AnalysisService.atr(highs, lows, closes, period)
-        if atr_val == 0:
+        if atr_val == 0 or len(closes) < period:
             return {"trend": "unknown", "value": 0, "flip": False, "streak": 0}
-        recent_close = closes[-1]
-        upper = recent_close + mult * atr_val
-        lower = recent_close - mult * atr_val
-        trend = "up" if recent_close > upper else ("down" if recent_close < lower else "unknown")
-        return {"trend": trend, "value": upper if trend == "up" else lower, "flip": False, "streak": 0}
+
+        hl2 = [(highs[i] + lows[i]) / 2 for i in range(len(closes))]
+        upper_band = [hl2[i] + mult * atr_val for i in range(len(hl2))]
+        lower_band = [hl2[i] - mult * atr_val for i in range(len(hl2))]
+
+        trend = "unknown"
+        supertrend_val = 0.0
+        for i in range(1, len(closes)):
+            if closes[i] > upper_band[i - 1]:
+                trend = "up"
+                supertrend_val = lower_band[i]
+            elif closes[i] < lower_band[i - 1]:
+                trend = "down"
+                supertrend_val = upper_band[i]
+
+        return {"trend": trend, "value": round(supertrend_val, 4), "flip": False, "streak": 0}
 
     # ── ADX ───────────────────────────────────────────
 
@@ -282,8 +293,6 @@ class AnalysisService:
                     tf_score += 15
                 if b.macd_bullish:
                     tf_score += 10
-                if b.close > b.ema20 if False else 0:
-                    tf_score += 5
                 if b.rsi > 40 and b.rsi < 70:
                     tf_score += 10
                 elif b.rsi < 30:

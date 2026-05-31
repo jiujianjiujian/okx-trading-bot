@@ -11,6 +11,7 @@ Bybit 剥头皮交易机器人 V6 — 模块化架构
   python main.py
 """
 
+import os
 import sys
 import threading
 import time
@@ -57,7 +58,7 @@ logger = get_logger(__name__)
 # ── 防重复启动 ────────────────────────────────────────
 
 def acquire_lock(path: str = ".bot.lock"):
-    lock_file = open(path, "a+", encoding="utf-8")
+    lock_file = open(path, "a+", encoding="utf-8")  # noqa: SIM115 — lock must stay open
     try:
         if os.name == "nt":
             import msvcrt
@@ -66,9 +67,9 @@ def acquire_lock(path: str = ".bot.lock"):
         else:
             import fcntl
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as exc:
         lock_file.close()
-        raise RuntimeError("交易机器人已在运行中")
+        raise RuntimeError("交易机器人已在运行中") from exc
     lock_file.seek(0)
     lock_file.truncate()
     lock_file.write(str(os.getpid()))
@@ -76,7 +77,6 @@ def acquire_lock(path: str = ".bot.lock"):
     return lock_file
 
 
-import os
 _INSTANCE_LOCK = None
 if __name__ == "__main__":
     _INSTANCE_LOCK = acquire_lock()
@@ -163,8 +163,8 @@ async def lifespan(app: FastAPI):
     """应用生命周期"""
     print("=" * 60)
     print("⚡ Bybit 剥头皮交易机器人 V6 启动中...")
-    print(f"   目标: 日净利 $50 USDT")
-    print(f"   模式: AI 剥头皮 + 3Commas 执行")
+    print("   目标: 日净利 $50 USDT")
+    print("   模式: AI 剥头皮 + 3Commas 执行")
     print(f"   3Commas 信号: {'已配置' if components.get('threecommas') and components['threecommas'].configured else '未配置'}")
     print(f"   Webhook: http://0.0.0.0:{WEBHOOK_PORT}/webhook")
     print("=" * 60)

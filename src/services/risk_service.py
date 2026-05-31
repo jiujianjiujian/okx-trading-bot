@@ -9,6 +9,7 @@
 6. 同币种冷却
 """
 
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ logger = get_logger(__name__)
 
 class RiskService:
     """
-    剥头皮风控引擎
+    剥头皮风控引擎 (线程安全)
 
     状态追踪:
     - daily_pnl_usdt: 当日累计盈亏
@@ -36,6 +37,7 @@ class RiskService:
     """
 
     def __init__(self):
+        self._lock = threading.Lock()
         self.daily_pnl_usdt = 0.0
         self.daily_trade_count = 0
         self.consecutive_losses = 0
@@ -62,6 +64,10 @@ class RiskService:
         下单前完整风控检查
         返回: (通过, 原因)
         """
+        with self._lock:
+            return self._pre_trade_check_locked(decision)
+
+    def _pre_trade_check_locked(self, decision: ScalpDecision) -> tuple[bool, str]:
         self._maybe_reset_daily()
 
         # 1. 黑天鹅暂停
@@ -105,52 +111,56 @@ class RiskService:
 
     def on_trade_open(self, decision: ScalpDecision):
         """交易已开仓"""
-        self.daily_trade_count += 1
-        logger.info(
-            "开仓: %s %s | 日交易 #%s | 风险 $%.2f",
-            decision.symbol, decision.direction,
-            self.daily_trade_count, decision.risk_usdt,
-        )
+        with self._lock:
+            self.daily_trade_count += 1
+            logger.info(
+                "开仓: %s %s | 日交易 #%s | 风险 $%.2f",
+                decision.symbol, decision.direction,
+                self.daily_trade_count, decision.risk_usdt,
+            )
 
     def on_trade_close(self, symbol: str, pnl_usdt: float):
         """交易已平仓"""
-        self.daily_pnl_usdt += pnl_usdt
+        with self._lock:
+            self.daily_pnl_usdt += pnl_usdt
 
-        if pnl_usdt < 0:
-            self.consecutive_losses += 1
-            self.symbol_daily_losses[symbol] += 1
-            # 同币种当日亏损 2 次 → 冷却 2 小时
-            if self.symbol_daily_losses[symbol] >= 2:
-                self.symbol_cooldown[symbol] = time.time() + 7200
-                logger.warning("%s 当日亏损 %s 次, 冷却 2h", symbol, self.symbol_daily_losses[symbol])
-            # 连亏 3 次 → 暂停 1 小时
-            if self.consecutive_losses >= 3:
-                self.blackout_until = time.time() + 3600
-                logger.warning("连亏 %s 次, 全局暂停 1h", self.consecutive_losses)
-        else:
-            self.consecutive_losses = 0
-            self.symbol_daily_losses[symbol] = max(0, self.symbol_daily_losses[symbol] - 1)
+            if pnl_usdt < 0:
+                self.consecutive_losses += 1
+                self.symbol_daily_losses[symbol] += 1
+                if self.symbol_daily_losses[symbol] >= 2:
+                    self.symbol_cooldown[symbol] = time.time() + 7200
+                    logger.warning("%s 当日亏损 %s 次, 冷却 2h", symbol, self.symbol_daily_losses[symbol])
+                if self.consecutive_losses >= 3:
+                    self.blackout_until = time.time() + 3600
+                    logger.warning("连亏 %s 次, 全局暂停 1h", self.consecutive_losses)
+            else:
+                self.consecutive_losses = 0
+                self.symbol_daily_losses[symbol] = max(0, self.symbol_daily_losses[symbol] - 1)
+                # 盈利后清除暂停 (允许恢复交易)
+                self.blackout_until = 0.0
 
-        logger.info(
-            "平仓: %s | PnL $%.2f | 累计日盈亏 $%.2f | 连亏 %s",
-            symbol, pnl_usdt, self.daily_pnl_usdt, self.consecutive_losses,
-        )
+            logger.info(
+                "平仓: %s | PnL $%.2f | 累计日盈亏 $%.2f | 连亏 %s",
+                symbol, pnl_usdt, self.daily_pnl_usdt, self.consecutive_losses,
+            )
 
     def on_blackswan(self):
         """黑天鹅事件触发"""
-        self.blackout_until = time.time() + 1800  # 暂停 30 分钟
-        logger.warning("黑天鹅触发! 暂停交易 30 分钟")
+        with self._lock:
+            self.blackout_until = time.time() + 1800
+            logger.warning("黑天鹅触发! 暂停交易 30 分钟")
 
     # ── 状态查询 ──────────────────────────────────────
 
     def status_report(self) -> str:
         """风控状态文本"""
-        self._maybe_reset_daily()
-        lines = [
-            f"📊 风控状态",
-            f"日交易: {self.daily_trade_count}/{MAX_DAILY_TRADES}",
-            f"日盈亏: ${self.daily_pnl_usdt:+.2f} (上限 -${MAX_DAILY_LOSS_USDT})",
-            f"连亏: {self.consecutive_losses}/3",
-            f"暂停: {'是' if self.blackout_until > time.time() else '否'}",
-        ]
-        return "\n".join(lines)
+        with self._lock:
+            self._maybe_reset_daily()
+            lines = [
+                "📊 风控状态",
+                f"日交易: {self.daily_trade_count}/{MAX_DAILY_TRADES}",
+                f"日盈亏: ${self.daily_pnl_usdt:+.2f} (上限 -${MAX_DAILY_LOSS_USDT})",
+                f"连亏: {self.consecutive_losses}/3",
+                f"暂停: {'是' if self.blackout_until > time.time() else '否'}",
+            ]
+            return "\n".join(lines)
