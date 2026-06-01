@@ -75,29 +75,35 @@ class CornixClient:
     # ── 格式化 ────────────────────────────────────────
 
     def _format_signal(self, d: ScalpDecision) -> str:
-        """Cornix 标准信号格式
+        """Cornix 信号格式 — 带视觉标识的完整信号卡
 
-        必须包含: Coin, Direction, Entry, Targets, Stop Loss, Exchange
-        Cornix 解析规则: 不区分大小写, 支持 LONG/SHORT 或 Long/Short
+        Cornix 解析关键词: Coin, Direction, Entry, Targets, Stop Loss, Exchange
         """
-        direction = "LONG" if d.direction == "long" else "SHORT"
+        is_long = d.direction == "long"
+        emoji = "🟢" if is_long else "🔴"
+        arrow = "↗" if is_long else "↘"
+        direction = "LONG" if is_long else "SHORT"
+        label = "做多" if is_long else "做空"
+
         tp1 = d.take_profit
-        tp2 = d.entry * (1 + d.tp_pct * 1.5 / 100) if d.direction == "long" else \
+        tp2 = d.entry * (1 + d.tp_pct * 1.5 / 100) if is_long else \
               d.entry * (1 - d.tp_pct * 1.5 / 100)
-        tp3 = d.entry * (1 + d.tp_pct * 2.0 / 100) if d.direction == "long" else \
+        tp3 = d.entry * (1 + d.tp_pct * 2.0 / 100) if is_long else \
               d.entry * (1 - d.tp_pct * 2.0 / 100)
 
         return (
+            f"{emoji} 新信号 | {label} {arrow}\n\n"
             f"Coin: {d.symbol}\n"
             f"Direction: {direction}\n"
-            f"Entry: {d.entry:.4f}\n"
+            f"Entry: {d.entry:.4f}\n\n"
             f"Targets:\n"
-            f"1) {tp1:.4f}\n"
-            f"2) {tp2:.4f}\n"
-            f"3) {tp3:.4f}\n"
+            f"  1) {tp1:.4f}\n"
+            f"  2) {tp2:.4f}\n"
+            f"  3) {tp3:.4f}\n\n"
             f"Stop Loss: {d.stop_loss:.4f}\n"
             f"Exchange: {self._exchange}\n"
-            f"Leverage: 10"
+            f"Leverage: 10x\n\n"
+            f"置信度: {d.confidence}% | 策略: {d.scalping_strategy} | 净盈亏比: {d.net_risk_reward:.1f}"
         )
 
     def _send_telegram(self, text: str) -> tuple[bool, str]:
