@@ -75,9 +75,10 @@ class CornixClient:
     # ── 格式化 ────────────────────────────────────────
 
     def _format_signal(self, d: ScalpDecision) -> str:
-        """Cornix 信号卡 — Cornix 解析关键词需保留
+        """Cornix 信号 — 一行不多, 美观 + 解析兼容
 
-        Cornix 识别: Coin / Direction / Entry / Targets / Stop Loss / Exchange
+        Cornix 识别关键词: Coin, Direction, Entry, Targets, Stop Loss, Exchange
+        这些标签保留, 其余信息融入其中
         """
         is_long = d.direction == "long"
         emoji = "🟢" if is_long else "🔴"
@@ -92,19 +93,15 @@ class CornixClient:
         tp3 = d.entry * mult_20
 
         return (
-            f"{emoji} {label} {d.symbol} {arrow}\n\n"
-            f"Entry: {d.entry:.4f}\n"
-            f"🎯 TP1: {tp1:.4f}\n"
-            f"🎯 TP2: {tp2:.4f}\n"
-            f"🎯 TP3: {tp3:.4f}\n"
-            f"🛑 SL:  {d.stop_loss:.4f}\n\n"
+            f"{emoji} {label} {arrow}  {d.symbol}\n"
             f"Coin: {d.symbol}\n"
             f"Direction: {direction}\n"
+            f"Entry: {d.entry:.4f}\n"
             f"Targets: {tp1:.4f}, {tp2:.4f}, {tp3:.4f}\n"
-            f"Stop Loss: {d.stop_loss:.4f}\n"
+            f"🛑 Stop Loss: {d.stop_loss:.4f}\n"
             f"Exchange: {self._exchange}\n"
-            f"Leverage: 10x\n\n"
-            f"⚡ {d.confidence}% 置信 | RR {d.net_risk_reward:.1f} | {d.scalping_strategy}"
+            f"Leverage: 10x\n"
+            f"⚡ {d.confidence}% | RR {d.net_risk_reward:.1f} | {d.scalping_strategy}"
         )
 
     def send_entry_filled(self, symbol: str, direction: str, entry_price: float) -> tuple[bool, str]:
