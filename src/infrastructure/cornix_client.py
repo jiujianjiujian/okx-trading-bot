@@ -75,16 +75,11 @@ class CornixClient:
     # ── 格式化 ────────────────────────────────────────
 
     def _format_signal(self, d: ScalpDecision) -> str:
-        """Cornix 信号 — 一行不多, 美观 + 解析兼容
-
-        Cornix 识别关键词: Coin, Direction, Entry, Targets, Stop Loss, Exchange
-        这些标签保留, 其余信息融入其中
-        """
+        """Cornix 信号 — 用户定制模版"""
         is_long = d.direction == "long"
-        emoji = "🟢" if is_long else "🔴"
-        direction = "LONG" if is_long else "SHORT"
-        label = "做多" if is_long else "做空"
-        arrow = "↗️" if is_long else "↘️"
+        direction = "BUY" if is_long else "SELL"
+        emoji = "📈" if is_long else "📉"
+        sym = d.symbol.replace("USDT", "/USDT")
 
         tp1 = d.take_profit
         mult_15 = 1 + d.tp_pct * 1.5 / 100 if is_long else 1 - d.tp_pct * 1.5 / 100
@@ -92,16 +87,23 @@ class CornixClient:
         tp2 = d.entry * mult_15
         tp3 = d.entry * mult_20
 
+        entry_low = round(d.entry * 0.998, 3)
+        entry_high = round(d.entry * 1.002, 3)
+
+        cornix_dir = "LONG" if is_long else "SHORT"
+
         return (
-            f"{emoji} {label} {arrow}  {d.symbol}\n"
-            f"Coin: {d.symbol}\n"
-            f"Direction: {direction}\n"
-            f"Entry: {d.entry:.4f}\n"
-            f"Targets: {tp1:.4f}, {tp2:.4f}, {tp3:.4f}\n"
-            f"🛑 Stop Loss: {d.stop_loss:.4f}\n"
-            f"Exchange: {self._exchange}\n"
-            f"Leverage: 10x\n"
-            f"⚡ {d.confidence}% | RR {d.net_risk_reward:.1f} | {d.scalping_strategy}"
+            f"{sym} {emoji} {direction}\n\n"
+            f"🔹Entry zone: {entry_low} - {entry_high}\n\n"
+            f"💰TP1 {tp1:.3f}\n"
+            f"💰TP2 {tp2:.3f}\n"
+            f"💰TP3 {tp3:.3f}\n"
+            f"🚫SL {d.stop_loss:.3f}\n\n"
+            f"〽️Leverage 10x | {d.confidence}% | RR {d.net_risk_reward:.1f}\n"
+            f"﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n"
+            f"Coin: {d.symbol} | Direction: {cornix_dir} | Entry: {d.entry:.4f} | "
+            f"Targets: {tp1:.4f}, {tp2:.4f}, {tp3:.4f} | Stop Loss: {d.stop_loss:.4f} | "
+            f"Exchange: {self._exchange}"
         )
 
     def send_entry_filled(self, symbol: str, direction: str, entry_price: float) -> tuple[bool, str]:
