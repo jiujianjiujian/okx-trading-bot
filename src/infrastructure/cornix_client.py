@@ -75,25 +75,29 @@ class CornixClient:
     # ── 格式化 ────────────────────────────────────────
 
     def _format_signal(self, d: ScalpDecision) -> str:
-        """构建 Cornix 标准信号格式
+        """Cornix 标准信号格式
 
-        Cornix 识别规则:
-        - 首行必须含 LONG/SHORT + 币种
-        - Entry/Targets/Stop Loss 标签
-        - Exchange 标签用于指定交易所
+        必须包含: Coin, Direction, Entry, Targets, Stop Loss, Exchange
+        Cornix 解析规则: 不区分大小写, 支持 LONG/SHORT 或 Long/Short
         """
         direction = "LONG" if d.direction == "long" else "SHORT"
         tp1 = d.take_profit
         tp2 = d.entry * (1 + d.tp_pct * 1.5 / 100) if d.direction == "long" else \
               d.entry * (1 - d.tp_pct * 1.5 / 100)
+        tp3 = d.entry * (1 + d.tp_pct * 2.0 / 100) if d.direction == "long" else \
+              d.entry * (1 - d.tp_pct * 2.0 / 100)
 
         return (
-            f"{direction} {d.symbol}\n"
+            f"Coin: {d.symbol}\n"
+            f"Direction: {direction}\n"
             f"Entry: {d.entry:.4f}\n"
-            f"Targets: {tp1:.4f}, {tp2:.4f}\n"
+            f"Targets:\n"
+            f"1) {tp1:.4f}\n"
+            f"2) {tp2:.4f}\n"
+            f"3) {tp3:.4f}\n"
             f"Stop Loss: {d.stop_loss:.4f}\n"
-            f"Leverage: 10\n"
-            f"Exchange: {self._exchange}"
+            f"Exchange: {self._exchange}\n"
+            f"Leverage: 10"
         )
 
     def _send_telegram(self, text: str) -> tuple[bool, str]:
