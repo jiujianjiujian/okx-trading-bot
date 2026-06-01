@@ -39,10 +39,10 @@ async def health():
         checks["bybit"] = str(e)[:100]
         fail_count += 1
 
-    # 3Commas
-    from ..infrastructure.threecommas_client import ThreeCommasClient
-    tc = ThreeCommasClient()
-    checks["3commas"] = "configured" if tc.configured else "not_configured"
+    # Cornix
+    from ..infrastructure.cornix_client import CornixClient
+    tc = CornixClient()
+    checks["cornix"] = "configured" if tc.configured else "not_configured"
     if tc.configured:
         ok_count += 1
 
@@ -68,12 +68,12 @@ async def health():
 
 @api_app.get("/api/close")
 async def api_close(symbol: str, _admin=ADMIN):
-    """紧急平仓 — 通过 3Commas 发送平仓信号"""
+    """紧急平仓 — 通过 Cornix 发送平仓信号"""
     symbol = symbol.upper()
     if not symbol.endswith("USDT"):
         symbol += "USDT"
-    from ..infrastructure.threecommas_client import ThreeCommasClient
-    tc = ThreeCommasClient()
+    from ..infrastructure.cornix_client import CornixClient
+    tc = CornixClient()
     ok, msg = tc.send_close(symbol)
     if ok:
         bybit = _get_bybit()
@@ -82,7 +82,7 @@ async def api_close(symbol: str, _admin=ADMIN):
             for p in positions:
                 if p.get("symbol", "") == symbol:
                     return {"status": "close_sent", "position_exists": True, "detail": msg}
-            return {"status": "close_sent", "position_exists": False, "detail": "3Commas信号已发送,Bybit无持仓"}
+            return {"status": "close_sent", "position_exists": False, "detail": "Cornix信号已发送,Bybit无持仓"}
         except Exception:
             return {"status": "close_sent", "detail": msg}
     return {"status": "error", "detail": msg}

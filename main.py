@@ -3,7 +3,7 @@ Bybit 剥头皮交易机器人 V6 — 模块化架构
 
 数据流:
   市场数据 (Bybit) → AI 分析 (DeepSeek) → 剥头皮参数计算
-       → 3Commas Webhook → Bybit 执行 → PnL 追踪
+       → Cornix Webhook → Bybit 执行 → PnL 追踪
 
   TradingView Webhook 同样走此管线
 
@@ -32,7 +32,7 @@ from src.infrastructure.config import (
     WEBHOOK_PORT, AI_AUTO_START, TELEGRAM_ENABLED,
 )
 from src.infrastructure.bybit_client import BybitClient
-from src.infrastructure.threecommas_client import ThreeCommasClient
+from src.infrastructure.cornix_client import CornixClient
 from src.infrastructure.deepseek_client import DeepSeekClient
 from src.infrastructure.sqlite_store import SqliteStore
 from src.infrastructure.logging_ import get_logger
@@ -92,7 +92,7 @@ def bootstrap():
 
     # 基础设施
     bybit = BybitClient()
-    threecommas = ThreeCommasClient()
+    cornix = CornixClient()
     deepseek = DeepSeekClient()
     store = SqliteStore()
 
@@ -118,7 +118,7 @@ def bootstrap():
         scalper=scalper,
         risk=risk,
         report=report,
-        threecommas=threecommas,
+        cornix=cornix,
         store=store,
         notifier=notifier,
         optimizer=optimizer,
@@ -142,9 +142,9 @@ def bootstrap():
     container.register("optimizer", lambda: optimizer)
 
     logger.info(
-        "初始化完成 | Bybit %s | 3Commas %s | DeepSeek %s | Telegram %s",
+        "初始化完成 | Bybit %s | Cornix %s | DeepSeek %s | Telegram %s",
         "✓" if bybit else "✗",
-        "✓" if threecommas.configured else "✗",
+        "✓" if cornix.configured else "✗",
         "✓" if deepseek.configured else "✗",
         "✓" if telegram else "✗",
     )
@@ -155,7 +155,7 @@ def bootstrap():
         "notifier": notifier,
         "signal_svc": signal_svc,
         "telegram": telegram,
-        "threecommas": threecommas,
+        "cornix": cornix,
         "deepseek": deepseek,
     }
 
@@ -171,8 +171,8 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
     print("⚡ Bybit 剥头皮交易机器人 V6 启动中...")
     print("   目标: 日净利 $50 USDT")
-    print("   模式: AI 剥头皮 + 3Commas 执行")
-    print(f"   3Commas 信号: {'已配置' if components.get('threecommas') and components['threecommas'].configured else '未配置'}")
+    print("   模式: AI 剥头皮 + Cornix 执行")
+    print(f"   Cornix 信号: {'已配置' if components.get('cornix') and components['cornix'].configured else '未配置'}")
     print(f"   Webhook: http://0.0.0.0:{WEBHOOK_PORT}/webhook")
     print("=" * 60)
 

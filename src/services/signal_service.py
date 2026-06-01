@@ -10,7 +10,7 @@ from ..core.models import (
 )
 from ..core.interfaces import Notifier, SignalStore
 from ..infrastructure.bybit_client import BybitClient
-from ..infrastructure.threecommas_client import ThreeCommasClient
+from ..infrastructure.cornix_client import CornixClient
 from ..infrastructure.config import (
     DAILY_TARGET_USDT, SCALP_UNIVERSE,
 )
@@ -57,7 +57,7 @@ class SignalService:
         scalper: ScalpingService,
         risk: RiskService,
         report: ReportService,
-        threecommas: ThreeCommasClient,
+        cornix: CornixClient,
         store: SignalStore,
         notifier: Notifier,
         optimizer: Optional[OptimizationService] = None,
@@ -69,7 +69,7 @@ class SignalService:
         self._scalper = scalper
         self._risk = risk
         self._report = report
-        self._tc = threecommas
+        self._cornix = cornix
         self._store = store
         self._notifier = notifier
         self._optimizer = optimizer
@@ -127,7 +127,7 @@ class SignalService:
             return {"status": "rejected", "reason": reason}
 
         # 发送 3Commas
-        ok, msg = self._tc.send_signal(decision)
+        ok, msg = self._cornix.send_signal(decision)
         if not ok:
             self._notifier.notify_error("3Commas 发送失败", msg)
             return {"status": "error", "message": msg}
@@ -299,7 +299,7 @@ class SignalService:
 
                     # 发送 3Commas
                     self._notifier.notify_scalp_decision(decision)
-                    ok, _ = self._tc.send_signal(decision)
+                    ok, _ = self._cornix.send_signal(decision)
                     if ok:
                         self._risk.on_trade_open(decision)
                         self._notifier.notify_trade_open(decision, 0)

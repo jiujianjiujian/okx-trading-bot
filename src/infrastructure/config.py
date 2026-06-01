@@ -12,12 +12,9 @@ BYBIT_DEMO = os.getenv("BYBIT_DEMO", "true").lower() == "true"
 BYBIT_BASE_URL = "https://api.bybit.com"
 BYBIT_TESTNET_URL = "https://api-testnet.bybit.com"
 
-# ── 3Commas Signal Bot (TradingView Webhook 格式) ─────────
-# 在 3Commas DCA Bot → Signals → 获取 Webhook URL 和 JWT Secret
-THREECOMMAS_SECRET = os.getenv("THREECOMMAS_SECRET", "")            # JWT token
-THREECOMMAS_BOT_UUID = os.getenv("THREECOMMAS_BOT_UUID", "")        # bot uuid
-THREECOMMAS_WEBHOOK_URL = os.getenv("THREECOMMAS_WEBHOOK_URL", "")  # 3C 提供的 webhook 地址
-THREECOMMAS_EXCHANGE = os.getenv("THREECOMMAS_EXCHANGE", "Bybit")   # 交易所名称
+# ── Cornix Bot (Telegram 频道信号) ──────────────────────
+# 创建私密 Telegram 频道 → 加入 @CornixBot → 获取频道 ID
+CORNIX_CHANNEL_ID = os.getenv("CORNIX_CHANNEL_ID", "")  # Telegram 频道 ID (如 @xxx 或 -100xxx)
 
 # ── TradingView Webhook ────────────────────────────────
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8000"))
