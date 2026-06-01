@@ -75,33 +75,26 @@ class CornixClient:
     # ── 格式化 ────────────────────────────────────────
 
     def _format_signal(self, d: ScalpDecision) -> str:
-        """构建 Cornix 标准信号格式"""
-        emoji = "🟢" if d.direction == "long" else "🔴"
-        direction = "LONG" if d.direction == "long" else "SHORT"
+        """构建 Cornix 标准信号格式
 
-        # 多段止盈: 第一目标 + 第二目标 (追踪)
+        Cornix 识别规则:
+        - 首行必须含 LONG/SHORT + 币种
+        - Entry/Targets/Stop Loss 标签
+        - Exchange 标签用于指定交易所
+        """
+        direction = "LONG" if d.direction == "long" else "SHORT"
         tp1 = d.take_profit
         tp2 = d.entry * (1 + d.tp_pct * 1.5 / 100) if d.direction == "long" else \
               d.entry * (1 - d.tp_pct * 1.5 / 100)
 
-        entry_low = round(d.entry * 0.9995, 4) if d.direction == "long" else round(d.entry * 1.0005, 4)
-        entry_high = d.entry
-
-        signal = (
-            f"📊 NEW SIGNAL\n"
-            f"Pair: {d.symbol}\n"
-            f"Direction: {direction}\n"
-            f"Entry: {entry_low} - {entry_high}\n"
-            f"Stop Loss: {d.stop_loss}\n"
-            f"Take Profit:\n"
-            f"  {tp1}\n"
-            f"  {tp2:.4f}\n"
-            f"Leverage: 10x\n"
-            f"Exchange: {self._exchange}\n\n"
-            f"#{d.symbol} #{direction} #{d.scalping_strategy} "
-            f"R:{d.net_risk_reward:.1f} C:{d.confidence}"
+        return (
+            f"{direction} {d.symbol}\n"
+            f"Entry: {d.entry:.4f}\n"
+            f"Targets: {tp1:.4f}, {tp2:.4f}\n"
+            f"Stop Loss: {d.stop_loss:.4f}\n"
+            f"Leverage: 10\n"
+            f"Exchange: {self._exchange}"
         )
-        return signal
 
     def _send_telegram(self, text: str) -> tuple[bool, str]:
         """通过 Telegram Bot API 发送消息到 Cornix 频道"""
@@ -109,7 +102,7 @@ class CornixClient:
         payload = {
             "chat_id": self._channel_id,
             "text": text,
-            "parse_mode": "HTML",
+            "parse_mode": "",
             "disable_web_page_preview": True,
         }
         try:
