@@ -157,6 +157,8 @@ class SignalService:
         """AI 自主交易主循环 — 每 10 秒一轮"""
         last_blackswan_check = 0.0
         last_pnl_sync = 0.0
+        last_position_check = 0.0
+        _known_positions: set[str] = set()
 
         while self._running:
             try:
@@ -226,6 +228,30 @@ class SignalService:
                                     )
                         except Exception as e:
                             logger.warning("周优化失败: %s", str(e))
+
+                # 持仓状态追踪 (每 60 秒 → Cornix 频道)
+                if now - last_position_check > 60:
+                    try:
+                        positions = self._bybit.get_positions()
+                        current_symbols = set()
+                        for p in positions:
+                            sym = p.get("symbol", "")
+                            if sym and float(p.get("size", "0")) != 0:
+                                current_symbols.add(sym)
+                                # 新开仓位 → 入场通知
+                                if sym not in _known_positions:
+                                    side = p.get("side", "")
+                                    direction = "long" if side == "Buy" else "short"
+                                    entry = float(p.get("avgPrice", "0"))
+                                    self._cornix.send_entry_filled(sym, direction, entry)
+                                    _known_positions.add(sym)
+                        # 已平仓 → 从追踪中移除
+                        for sym in list(_known_positions):
+                            if sym not in current_symbols:
+                                _known_positions.discard(sym)
+                    except Exception:
+                        pass
+                    last_position_check = now
 
                 # PnL 同步 (每 2 分钟)
                 if now - last_pnl_sync > 120:
