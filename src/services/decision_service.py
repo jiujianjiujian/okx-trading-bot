@@ -64,13 +64,18 @@ SuperTrend: {bundle.supertrend}
 价差: {snap.spread_pct:.4f}%
 买卖失衡: {snap.bid_ask_imbalance:+.3f} (正=买盘强)
 
-【资金费率】
-{snap.funding_rate:.4%}
+【OI持仓分析 — 关键!】
+OI变动: {snap.oi_change_pct:+.2f}% | 资金费率: {snap.funding_rate:.4%}
+信号规则:
+  OI up + 价跌 + 费率正 → 多头拥挤付资金费 → 空头信号增强
+  OI down + 价横盘 → 只是去杠杆 → 不要追空
+  OI up + 价涨 → 新资金入场 → 趋势延续
+  OI down + 价跌 → 多头爆仓 → 下跌趋势确认
 
 【最近价格】
 {recent_closes}
 
-注意: 手续费双向 {0.11}%, 止损和止盈必须扣除手续费后仍满足盈亏比≥2:1"""
+注意: 手续费双向 {0.11}%, 结合OI信号判断方向强度"""
 
 
 class DecisionService:

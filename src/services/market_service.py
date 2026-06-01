@@ -28,6 +28,9 @@ class MarketService:
         klines_5m = self._bybit.get_klines(symbol, interval="5", limit=100)
         ob = self._bybit.get_orderbook(symbol, depth=5)
         fr = self._bybit.get_funding_rate(symbol)
+        oi = self._bybit.get_open_interest(symbol)
+        oi_change = float(ticker.get("openInterest", "0"))
+        oi_change_pct = (oi - oi_change) / oi_change * 100 if oi_change > 0 else 0.0
 
         current = float(ticker.get("lastPrice", "0"))
         change_24h = float(ticker.get("price24hPcnt", "0")) * 100
@@ -64,6 +67,8 @@ class MarketService:
             spread_pct=round(spread, 4),
             bid_ask_imbalance=round(imbalance, 4),
             funding_rate=fr,
+            open_interest=oi,
+            oi_change_pct=round(oi_change_pct, 2),
             volume_24h=vol_24h,
         )
 

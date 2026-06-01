@@ -75,7 +75,7 @@ class CornixClient:
     # ── 格式化 ────────────────────────────────────────
 
     def _format_signal(self, d: ScalpDecision) -> str:
-        """Cornix 信号 — 用户定制模版"""
+        """Cornix 信号 — emoji 视觉 + Cornix 标准关键词"""
         is_long = d.direction == "long"
         direction = "BUY" if is_long else "SELL"
         emoji = "📈" if is_long else "📉"
@@ -90,20 +90,13 @@ class CornixClient:
         entry_low = round(d.entry * 0.998, 3)
         entry_high = round(d.entry * 1.002, 3)
 
-        cornix_dir = "LONG" if is_long else "SHORT"
-
         return (
             f"{sym} {emoji} {direction}\n\n"
-            f"🔹Entry zone: {entry_low} - {entry_high}\n\n"
-            f"💰TP1 {tp1:.3f}\n"
-            f"💰TP2 {tp2:.3f}\n"
-            f"💰TP3 {tp3:.3f}\n"
-            f"🚫SL {d.stop_loss:.3f}\n\n"
-            f"〽️Leverage 10x | {d.confidence}% | RR {d.net_risk_reward:.1f}\n"
-            f"﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊﹊\n"
-            f"Coin: {d.symbol} | Direction: {cornix_dir} | Entry: {d.entry:.4f} | "
-            f"Targets: {tp1:.4f}, {tp2:.4f}, {tp3:.4f} | Stop Loss: {d.stop_loss:.4f} | "
-            f"Exchange: {self._exchange}"
+            f"🔹Entry: {entry_low} - {entry_high}\n\n"
+            f"🎯Targets: {tp1:.3f}, {tp2:.3f}, {tp3:.3f}\n"
+            f"🛑Stop Loss: {d.stop_loss:.3f}\n"
+            f"Exchange: {self._exchange}\n"
+            f"〽️Leverage 10x | {d.confidence}% | RR {d.net_risk_reward:.1f}"
         )
 
     def send_entry_filled(self, symbol: str, direction: str, entry_price: float) -> tuple[bool, str]:

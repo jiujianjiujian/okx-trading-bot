@@ -55,6 +55,7 @@ class MarketSnapshot:
     # 资金费率
     funding_rate: float = 0.0
     open_interest: float = 0.0
+    oi_change_pct: float = 0.0    # OI 24h 变化%
     # 成交量
     volume_24h: float = 0.0
     volume_ratio: float = 1.0
