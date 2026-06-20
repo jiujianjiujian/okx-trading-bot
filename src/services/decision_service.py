@@ -8,6 +8,7 @@
 
 from ..core.models import MarketSnapshot, ScalpDecision, IndicatorBundle
 from ..infrastructure.deepseek_client import DeepSeekClient
+from ..infrastructure.local_llm_client import LocalLLMClient
 from ..infrastructure.config import MIN_AI_CONFIDENCE
 from ..infrastructure.logging_ import get_logger
 from .analysis_service import AnalysisService
@@ -81,9 +82,12 @@ OI变动: {snap.oi_change_pct:+.2f}% | 资金费率: {snap.funding_rate:.4%}
 class DecisionService:
     """AI 剥头皮决策引擎"""
 
-    def __init__(self, deepseek: DeepSeekClient, analysis: AnalysisService):
+    def __init__(self, deepseek: DeepSeekClient, analysis: AnalysisService, local_llm: LocalLLMClient | None = None):
         self._ds = deepseek
+        self._local = local_llm
         self._analysis = analysis
+        # 本地 LLM 优先
+        self._primary = self._local if self._local and self._local.configured else self._ds
 
     @property
     def available(self) -> bool:
@@ -112,22 +116,23 @@ class DecisionService:
         )
 
         if not self.available:
-            # 回退到纯规则决策
             return self._rule_based_decision(snap, bundle)
 
         # ── 快速 AI ──
-        quick_prompt = f"简要分析: {snap.symbol} 当前{snap.current_price}, RSI {bundle.rsi:.1f}, 趋势{'看涨' if bundle.macd_bullish else '看跌'}, ADX {bundle.adx:.1f}。只回答 LONG, SHORT, 或 WAIT。"
-        quick_resp = self._ds.chat([
+        quick_prompt = f"币种: {snap.symbol} 价格{snap.current_price}, RSI {bundle.rsi:.1f}, 趋势{'看涨' if bundle.macd_bullish else '看跌'}, ADX {bundle.adx:.1f}。只回答 LONG, SHORT, 或 WAIT。"
+        quick_resp = self._primary.chat([
             {"role": "system", "content": "你是交易员。只回答 LONG, SHORT, 或 WAIT 一个词。"},
             {"role": "user", "content": quick_prompt},
         ], max_tokens=10, temperature=0.1)
 
         quick_direction = quick_resp.strip().upper() if quick_resp else "WAIT"
-        logger.info("快速AI: %s → %s", snap.symbol, quick_direction)
+        logger.info("快速AI(%s): %s → %s",
+                    "local" if self._primary is self._local else "deepseek",
+                    snap.symbol, quick_direction)
 
         # ── 深度 AI ──
         deep_prompt = _build_user_prompt(snap, bundle, mode)
-        deep_result = self._ds.chat_json([
+        deep_result = self._primary.chat_json([
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": deep_prompt},
         ], max_tokens=800)

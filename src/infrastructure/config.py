@@ -74,6 +74,10 @@ SCALP_UNIVERSE = [
 # 杠杆 — 逐仓 10x
 SCALP_LEVERAGE = int(os.getenv("SCALP_LEVERAGE", "10"))
 
+# ── 本地 LLM (Ollama / OpenClaw / vLLM) ────────────────
+LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "")  # http://localhost:11434/v1/chat/completions
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3:9b")
+
 # ── 代理 ───────────────────────────────────────────────
 PROXY_URL = os.getenv("PROXY_URL", "")
 

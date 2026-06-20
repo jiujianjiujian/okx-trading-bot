@@ -34,6 +34,7 @@ from src.infrastructure.config import (
 from src.infrastructure.bybit_client import BybitClient
 from src.infrastructure.cornix_client import CornixClient
 from src.infrastructure.deepseek_client import DeepSeekClient
+from src.infrastructure.local_llm_client import LocalLLMClient
 from src.infrastructure.sqlite_store import SqliteStore
 from src.infrastructure.logging_ import get_logger
 
@@ -94,12 +95,13 @@ def bootstrap():
     bybit = BybitClient()
     cornix = CornixClient()
     deepseek = DeepSeekClient()
+    local_llm = LocalLLMClient()
     store = SqliteStore()
 
     # 服务层
     analysis = AnalysisService()
     market = MarketService(bybit)
-    decision = DecisionService(deepseek, analysis)
+    decision = DecisionService(deepseek, analysis, local_llm)
     scalper = ScalpingService()
     risk = RiskService()
     report = ReportService()
